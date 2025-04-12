@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/ritikarora108/ai-powered-sast-tool/backend/services"
 )
 
 // CloneActivityInput represents the input for the clone repository activity
@@ -36,11 +38,19 @@ type ScanActivityOutput struct {
 
 // CloneRepositoryActivity clones a GitHub repository to the local filesystem
 func CloneRepositoryActivity(ctx context.Context, input CloneActivityInput) (*CloneActivityOutput, error) {
-	// TODO: Implement repository cloning using a Git library
-	// For now, return a placeholder output
+	gitHubService := services.NewGitHubService()
+	repo := &services.Repository{
+		ID:       input.RepositoryID,
+		CloneURL: input.CloneURL,
+	}
 
 	// Create a temporary directory for the repository
 	repoDir := fmt.Sprintf("/tmp/repos/%s", input.RepositoryID)
+
+	err := gitHubService.CloneRepository(ctx, repo, repoDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to clone repository: %w", err)
+	}
 
 	return &CloneActivityOutput{
 		RepositoryID: input.RepositoryID,
@@ -50,13 +60,26 @@ func CloneRepositoryActivity(ctx context.Context, input CloneActivityInput) (*Cl
 
 // ScanRepositoryActivity scans a repository for vulnerabilities
 func ScanRepositoryActivity(ctx context.Context, input ScanActivityInput) (*ScanActivityOutput, error) {
-	// TODO: Implement vulnerability scanning
-	// This will call the OpenAI/BAML service to analyze code files
+	scannerService := services.NewScannerService(services.NewGitHubService())
+
+	var vulnerabilityTypes []services.VulnerabilityType
+	for _, vulnType := range input.VulnTypes {
+		vulnerabilityTypes = append(vulnerabilityTypes, services.VulnerabilityType(vulnType))
+	}
+
+	scanOptions := &services.ScanOptions{
+		VulnerabilityTypes: vulnerabilityTypes,
+		FileExtensions:     input.FileExtensions,
+	}
+	scanResult, err := scannerService.ScanRepository(ctx, input.RepoDir, scanOptions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan repository: %w", err)
+	}
 
 	return &ScanActivityOutput{
 		RepositoryID:  input.RepositoryID,
 		ScanID:        "placeholder-scan-id",
-		VulnCount:     0,
+		VulnCount:     len(scanResult.Vulnerabilities),
 		ScanTimestamp: time.Now(),
 	}, nil
 }
