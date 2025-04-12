@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"go.temporal.io/sdk/workflow"
+	"go.temporal.io/sdk/temporal"
 )
 
 // ScanWorkflowInput represents the input for the scan workflow
@@ -38,7 +39,7 @@ func ScanWorkflow(ctx workflow.Context, input ScanWorkflowInput) (*ScanWorkflowO
 	var cloneOutput CloneActivityOutput
 	cloneCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 10 * time.Minute,
-		RetryPolicy: &workflow.RetryPolicy{
+		RetryPolicy: &temporal.RetryPolicy{
 			MaximumAttempts: 3,
 		},
 	})
@@ -62,7 +63,7 @@ func ScanWorkflow(ctx workflow.Context, input ScanWorkflowInput) (*ScanWorkflowO
 	var scanOutput ScanActivityOutput
 	scanCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 30 * time.Minute,
-		RetryPolicy: &workflow.RetryPolicy{
+		RetryPolicy: &temporal.RetryPolicy{
 			MaximumAttempts: 2,
 		},
 	})
