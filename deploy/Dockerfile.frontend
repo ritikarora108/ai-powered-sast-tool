@@ -1,0 +1,53 @@
+FROM node:20-alpine AS base
+
+# Install dependencies only when needed
+FROM base AS deps
+WORKDIR /app
+
+# Copy package.json and package-lock.json or yarn.lock
+COPY package.json package-lock.json* yarn.lock* ./
+
+# Install dependencies
+RUN npm ci
+
+# Development image, keep maximum compatibility with local development
+FROM base AS development
+WORKDIR /app
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+
+# Next.js collects anonymous telemetry data about general usage
+ENV NEXT_TELEMETRY_DISABLED 1
+
+# Start the application in development mode
+CMD ["npm", "run", "dev"]
+
+# Production image, optimize for small size
+FROM base AS builder
+WORKDIR /app
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+
+# Build the application
+RUN npm run build
+
+# Production runtime image
+FROM base AS production
+WORKDIR /app
+
+ENV NODE_ENV production
+ENV NEXT_TELEMETRY_DISABLED 1
+
+# Copy next.config.js and public folder
+COPY --from=builder /app/next.config.js ./
+COPY --from=builder /app/public ./public
+
+# Copy build output
+COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
+
+# Run the application
+CMD ["npm", "start"] 
