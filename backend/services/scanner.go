@@ -2,6 +2,9 @@ package services
 
 import (
 	"context"
+	"fmt"
+	"time"
+
 )
 
 // VulnerabilityType represents an OWASP Top 10 vulnerability type
@@ -57,25 +60,54 @@ type ScannerService interface {
 }
 
 // NewScannerService creates a new scanner service instance
-func NewScannerService() ScannerService {
-	return &scannerService{}
+func NewScannerService(githubService GitHubService) ScannerService {
+	return &scannerService{
+        githubService: githubService,
+    }
 }
 
 // scannerService implements the ScannerService interface
 type scannerService struct {
-	// Add dependencies here
+	githubService GitHubService
 }
 
 func (s *scannerService) ScanRepository(ctx context.Context, repoDir string, options *ScanOptions) (*ScanResult, error) {
-	// TODO: Implement repository scanning
+
+	vulnerabilities := []*Vulnerability{}
+	files, err := s.githubService.ListFiles(ctx, repoDir, options.FileExtensions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list files: %w", err)
+	}
+
+	for _, file := range files {
+		fileVulnerabilities, err := s.ScanFile(ctx, file, options)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan file %s: %w", file, err)
+		}
+		vulnerabilities = append(vulnerabilities, fileVulnerabilities...)
+	}
+
 	return &ScanResult{
 		RepositoryID:    "placeholder-repo-id",
-		Vulnerabilities: []*Vulnerability{},
-		ScanTime:        0,
+		Vulnerabilities: vulnerabilities,
+		ScanTime:        time.Now().Unix(),
 	}, nil
+	
 }
 
 func (s *scannerService) ScanFile(ctx context.Context, filePath string, options *ScanOptions) ([]*Vulnerability, error) {
-	// TODO: Implement file scanning
-	return []*Vulnerability{}, nil
+	openAIService := NewOpenAIService()
+	req := &AnalysisRequest{
+		Code:      filePath,
+		Language:  "go", // Assuming the language is Go, this can be dynamic based on the file extension
+		FilePath:  filePath,
+		VulnTypes: options.VulnerabilityTypes,
+	}
+
+	resp, err := openAIService.AnalyzeCode(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to analyze code: %w", err)
+	}
+
+	return resp.Vulnerabilities, nil
 }
