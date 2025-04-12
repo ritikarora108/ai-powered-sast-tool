@@ -3,18 +3,36 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"context"
+	"fmt"
 
+	"go.temporal.io/sdk/client"
 	"github.com/go-chi/chi/v5"
+	"github.com/ritikarora108/ai-powered-sast-tool/backend/services"
+	"github.com/ritikarora108/ai-powered-sast-tool/backend/temporal"
 )
 
 // RepositoryHandler handles repository-related API requests
 type RepositoryHandler struct {
-	// Add service dependencies here
+	GitHubService   services.GitHubService
+	ScannerService  services.ScannerService
+	OpenAIService   services.OpenAIService
+	TemporalClient  client.Client
 }
 
 // NewRepositoryHandler creates a new repository handler
-func NewRepositoryHandler() *RepositoryHandler {
-	return &RepositoryHandler{}
+func NewRepositoryHandler(
+	githubService services.GitHubService,
+	scannerService services.ScannerService,
+	openAIService services.OpenAIService,
+	temporalClient client.Client,
+) *RepositoryHandler {
+	return &RepositoryHandler{
+		GitHubService:   githubService,
+		ScannerService:  scannerService,
+		OpenAIService:   openAIService,
+		TemporalClient:  temporalClient,
+	}
 }
 
 // RegisterRoutes registers the repository routes
@@ -41,17 +59,29 @@ func (h *RepositoryHandler) CreateRepository(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// TODO: Implement repository creation
+	repoID, err := h.GitHubService.CreateRepository(req.Owner, req.Name, req.URL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{
-		"id": "placeholder-repo-id",
+		"id": repoID,
 	})
+	
 }
 
 // ListRepositories handles listing repositories
 func (h *RepositoryHandler) ListRepositories(w http.ResponseWriter, r *http.Request) {
-	// TODO: Implement repository listing
+	repositories, err := h.GitHubService.ListRepositories()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(repositories)
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode([]map[string]string{})
@@ -61,7 +91,14 @@ func (h *RepositoryHandler) ListRepositories(w http.ResponseWriter, r *http.Requ
 func (h *RepositoryHandler) GetRepository(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
-	// TODO: Implement getting a repository
+	repo, err := h.GitHubService.GetRepository(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(repo)
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{
@@ -76,13 +113,32 @@ func (h *RepositoryHandler) GetRepository(w http.ResponseWriter, r *http.Request
 func (h *RepositoryHandler) ScanRepository(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
-	// TODO: Implement repository scanning
-	// This will likely initiate a Temporal workflow
+	// Initiate Temporal workflow for repository scanning
+	workflowOptions := client.StartWorkflowOptions{
+		ID:        "scan-workflow-" + id,
+		TaskQueue: "SCAN_TASK_QUEUE",
+	}
+
+	workflowInput := temporal.ScanWorkflowInput{
+		RepositoryID: id,
+		Owner:        "placeholder-owner",
+		Name:         "placeholder-name",
+		CloneURL:     "placeholder-url",
+		VulnTypes:    []string{"Injection", "Broken Access Control"},
+		FileExtensions: []string{".go", ".js"},
+	}
+
+	we, err := h.TemporalClient.ExecuteWorkflow(context.Background(), workflowOptions, temporal.ScanWorkflow, workflowInput)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to start scan workflow: %v", err), http.StatusInternalServerError)
+		return
+	}
 
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{
 		"id":     id,
 		"status": "scan_initiated",
+		"run_id": we.GetRunID(),
 	})
 }
 
@@ -90,11 +146,31 @@ func (h *RepositoryHandler) ScanRepository(w http.ResponseWriter, r *http.Reques
 func (h *RepositoryHandler) GetVulnerabilities(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
-	// TODO: Implement getting vulnerabilities
+	// Initiate Temporal workflow to get vulnerabilities
+	workflowOptions := client.StartWorkflowOptions{
+		ID:        "get-vulnerabilities-workflow-" + id,
+		TaskQueue: "SCAN_TASK_QUEUE",
+	}
 
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"repository_id":   id,
-		"vulnerabilities": []map[string]string{},
+	workflowInput := temporal.ScanWorkflowInput{
+		RepositoryID: id,
+		Owner:        "placeholder-owner",
+		Name:         "placeholder-name",
+		CloneURL:     "placeholder-url",
+		VulnTypes:    []string{"Injection", "Broken Access Control"},
+		FileExtensions: []string{".go", ".js"},
+	}
+
+	we, err := h.TemporalClient.ExecuteWorkflow(context.Background(), workflowOptions, temporal.ScanWorkflow, workflowInput)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to start get vulnerabilities workflow: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{
+		"id":     id,
+		"status": "vulnerabilities_retrieval_initiated",
+		"run_id": we.GetRunID(),
 	})
 }
