@@ -10,35 +10,29 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
-
-	"github.com/ritikarora108/ai-powered-sast-tool/backend/handlers"
+	"go.temporal.io/sdk/client"
+	"github.com/ritikarora108/ai-powered-sast-tool/backend/api"
 )
 
 func main() {
-	// Initialize router
-	r := chi.NewRouter()
 
-	// Middleware
-	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(60 * time.Second))
+	// Initialize Temporal client
+    temporalClient, err := client.NewLazyClient(client.Options{
+        HostPort: os.Getenv("TEMPORAL_HOST"),
+    })
+    if err != nil {
+        log.Fatalf("Unable to create Temporal client: %v", err)
+    }
+    defer temporalClient.Close()
 
-	// Routes
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-	})
+    // Create router with the temporal client
+	router := api.NewRouter(temporalClient)
 
-	// Mount API routes
-	r.Mount("/api", apiRoutes())
-
-	// Create server
-	server := &http.Server{
-		Addr:    ":8080",
-		Handler: r,
-	}
+    // Create server
+    server := &http.Server{
+        Addr:    ":8080",
+        Handler: router,
+    }
 
 	// Server shutdown context
 	serverCtx, serverStopCtx := context.WithCancel(context.Background())
@@ -69,26 +63,11 @@ func main() {
 
 	// Start the server
 	fmt.Println("Server starting on :8080")
-	err := server.ListenAndServe()
+	err = server.ListenAndServe()
 	if err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
 
 	// Wait for server context to be stopped
 	<-serverCtx.Done()
-}
-
-func apiRoutes() http.Handler {
-	r := chi.NewRouter()
-
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("API Endpoint"))
-	})
-
-	// Create repository handler and register routes
-	repoHandler := handlers.NewRepositoryHandler()
-	repoHandler.RegisterRoutes(r)
-
-	return r
 }
