@@ -2,6 +2,10 @@ package services
 
 import (
 	"context"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
 )
 
 // AnalysisRequest represents a request to analyze code for vulnerabilities
@@ -42,16 +46,59 @@ type openAIService struct {
 }
 
 func (s *openAIService) AnalyzeCode(ctx context.Context, req *AnalysisRequest) (*AnalysisResponse, error) {
-	// TODO: Implement OpenAI API call for code analysis
+	// Implement OpenAI API call for code analysis
+	client := &http.Client{}
+	reqBody, err := json.Marshal(map[string]interface{}{
+		"model":       s.model,
+		"prompt":      req.Code,
+		"max_tokens":  s.maxTokens,
+		"temperature": s.temperature,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	httpReq, err := http.NewRequest("POST", "https://api.openai.com/v1/engines/"+s.model+"/completions", bytes.NewBuffer(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+s.apiKey)
+
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call OpenAI API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	var apiResponse struct {
+		Choices []struct {
+			Text string `json:"text"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&apiResponse); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
 	// This will be replaced with BAML orchestration
 	return &AnalysisResponse{
-		Vulnerabilities: []*Vulnerability{},
-		RawResponse:     "",
+		Vulnerabilities: []*Vulnerability{}, // Placeholder for actual vulnerabilities
+		RawResponse:     apiResponse.Choices[0].Text,
 	}, nil
 }
 
 func (s *openAIService) AnalyzeMultipleFiles(ctx context.Context, requests []*AnalysisRequest) ([]*AnalysisResponse, error) {
-	// TODO: Implement batch analysis
-	// This will likely call AnalyzeCode multiple times or use batching if supported
-	return []*AnalysisResponse{}, nil
+	var responses []*AnalysisResponse
+	for _, req := range requests {
+		response, err := s.AnalyzeCode(ctx, req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to analyze code for request: %w", err)
+		}
+		responses = append(responses, response)
+	}
+	return responses, nil
 }
