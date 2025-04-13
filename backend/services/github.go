@@ -2,16 +2,17 @@ package services
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
-	
 
 	"github.com/go-git/go-git/v5"
 	"github.com/google/go-github/v60/github"
+	"github.com/ritikarora108/ai-powered-sast-tool/backend/db"
 )
 
 // Repository represents a GitHub repository
@@ -35,19 +36,25 @@ type GitHubService interface {
 	ListFiles(ctx context.Context, repoDir string, extensions []string) ([]string, error)
 
 	CreateRepository(owner, name, url string) (string, error)
-    ListRepositories() ([]*Repository, error)
-    GetRepository(id string) (*Repository, error)
+	ListRepositories() ([]*Repository, error)
+	GetRepository(id string) (*Repository, error)
 
 	// GetRepositoryVulnerabilities retrieves vulnerabilities for a repository
 	GetRepositoryVulnerabilities(ctx context.Context, repoID string) ([]*Vulnerability, error)
 
+	// AddUserRepository adds a repository for a user
+	AddUserRepository(ctx context.Context, userID string, repoURL string) (*Repository, error)
+
+	// GetDatabaseConnection returns the database connection
+	GetDatabaseConnection() *sql.DB
 }
 
 // NewGitHubService creates a new GitHub service instance
-func NewGitHubService() GitHubService {
+func NewGitHubService(dbQueries *db.Queries) GitHubService {
 	return &gitHubService{
 		client: &http.Client{},
 		apiURL: "https://api.github.com",
+		db:     dbQueries,
 	}
 }
 
@@ -55,6 +62,7 @@ func NewGitHubService() GitHubService {
 type gitHubService struct {
 	client *http.Client
 	apiURL string
+	db     *db.Queries // Add database client
 }
 
 func (s *gitHubService) FetchRepositoryInfo(ctx context.Context, owner, repo string) (*Repository, error) {
@@ -76,9 +84,9 @@ func (s *gitHubService) FetchRepositoryInfo(ctx context.Context, owner, repo str
 	}
 
 	var repoInfo struct {
-		ID       int    `json:"id"`
-		Name     string `json:"name"`
-		Owner    struct {
+		ID    int    `json:"id"`
+		Name  string `json:"name"`
+		Owner struct {
 			Login string `json:"login"`
 		} `json:"owner"`
 		HTMLURL  string `json:"html_url"`
@@ -97,7 +105,6 @@ func (s *gitHubService) FetchRepositoryInfo(ctx context.Context, owner, repo str
 		CloneURL: repoInfo.CloneURL,
 	}, nil
 }
-
 
 func (s *gitHubService) CloneRepository(ctx context.Context, repo *Repository, targetDir string) error {
 	// Implement Git clone using go-git
@@ -137,44 +144,42 @@ func (s *gitHubService) ListFiles(ctx context.Context, repoDir string, extension
 	return result, nil
 }
 
-
-func (s *gitHubService) CreateRepository(owner, name, url string) (string, error) {
+func (s *gitHubService) ListRepositories() ([]*Repository, error) {
 	ctx := context.Background()
 	client := github.NewClient(nil)
 
-	repo := &github.Repository{
-		Name:    &name,
-		Private: github.Bool(false), // Set to true if you want a private repository
-	}
-
-	createdRepo, _, err := client.Repositories.Create(ctx, owner, repo)
+	// Temporary implementation until DB is fully set up
+	repos, _, err := client.Repositories.ListByUser(ctx, "ritikarora108", nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to create repository: %w", err)
+		return nil, fmt.Errorf("failed to list repositories: %w", err)
 	}
 
-	return fmt.Sprintf("%d", createdRepo.GetID()), nil
-	
-	
+	var result []*Repository
+	for _, repo := range repos {
+		result = append(result, &Repository{
+			ID:   fmt.Sprintf("%d", repo.GetID()),
+			Name: repo.GetName(),
+			URL:  repo.GetHTMLURL(),
+		})
+	}
+	return result, nil
 }
 
-func (s *gitHubService) ListRepositories() ([]*Repository, error) {
-	ctx := context.Background()
-    client := github.NewClient(nil)
-    repos, _, err := client.Repositories.ListByUser(ctx, "ritikarora108", nil)
-    if err != nil {
-        return nil, fmt.Errorf("failed to list repositories: %w", err)
-    }
+func (s *gitHubService) AddUserRepository(ctx context.Context, userID string, repoURL string) (*Repository, error) {
+	// Parse the GitHub URL to extract owner and repo name
+	owner, name, err := parseGitHubURL(repoURL)
+	if err != nil {
+		return nil, err
+	}
 
-    var result []*Repository
-    for _, repo := range repos {
-        result = append(result, &Repository{
-            ID:   fmt.Sprintf("%d", repo.GetID()),
-            Name: repo.GetName(),
-            URL:  repo.GetHTMLURL(),
-        })
-    }
-    return result, nil
-	
+	// Fetch repository details from GitHub API
+	repoInfo, err := s.FetchRepositoryInfo(ctx, owner, name)
+	if err != nil {
+		return nil, err
+	}
+
+	// Temporary implementation until DB is fully set up
+	return repoInfo, nil
 }
 
 func (s *gitHubService) GetRepository(id string) (*Repository, error) {
@@ -192,7 +197,88 @@ func (s *gitHubService) GetRepository(id string) (*Repository, error) {
 }
 
 func (s *gitHubService) GetRepositoryVulnerabilities(ctx context.Context, repoID string) ([]*Vulnerability, error) {
-	// This will be implemented using our own scanning mechanism
-    // For now, return an empty slice as placeholder
-    return []*Vulnerability{}, nil
+	// Get the database connection
+	db := s.db.GetDB()
+	if db == nil {
+		return nil, fmt.Errorf("database connection not available")
+	}
+
+	// First, find the latest scan for this repository
+	var scanID string
+	err := db.QueryRowContext(ctx,
+		`SELECT id FROM scans WHERE repository_id = $1 ORDER BY created_at DESC LIMIT 1`,
+		repoID).Scan(&scanID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// No scans found for this repository
+			return []*Vulnerability{}, nil
+		}
+		return nil, fmt.Errorf("failed to find latest scan: %w", err)
+	}
+
+	// Query the vulnerabilities for this scan
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, vulnerability_type, file_path, line_start, line_end, severity, description, 
+		remediation, code_snippet FROM vulnerabilities WHERE scan_id = $1`,
+		scanID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query vulnerabilities: %w", err)
+	}
+	defer rows.Close()
+
+	var vulnerabilities []*Vulnerability
+	for rows.Next() {
+		vuln := &Vulnerability{}
+		var remediation, codeSnippet sql.NullString
+
+		err := rows.Scan(
+			&vuln.ID,
+			&vuln.Type,
+			&vuln.FilePath,
+			&vuln.LineStart,
+			&vuln.LineEnd,
+			&vuln.Severity,
+			&vuln.Description,
+			&remediation,
+			&codeSnippet,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan vulnerability row: %w", err)
+		}
+
+		if remediation.Valid {
+			vuln.Remediation = remediation.String
+		}
+		if codeSnippet.Valid {
+			vuln.Code = codeSnippet.String
+		}
+
+		vulnerabilities = append(vulnerabilities, vuln)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error while iterating over vulnerability rows: %w", err)
+	}
+
+	return vulnerabilities, nil
+}
+
+// Helper function to parse GitHub URLs
+func parseGitHubURL(url string) (owner, name string, err error) {
+	// Simple implementation for now
+	return "ritikarora108", "test", nil
+}
+
+func (s *gitHubService) CreateRepository(owner, name, url string) (string, error) {
+	// Temporary implementation - in a real app, we would create the repo on GitHub
+	// and store it in our database
+	return "123", nil
+}
+
+// GetDatabaseConnection returns the database connection
+func (s *gitHubService) GetDatabaseConnection() *sql.DB {
+	if s.db != nil {
+		return s.db.GetDB()
+	}
+	return nil
 }
