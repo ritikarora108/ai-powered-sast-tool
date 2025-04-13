@@ -3,8 +3,9 @@ package temporal
 import (
 	"time"
 
-	"go.temporal.io/sdk/workflow"
+	"github.com/ritikarora108/ai-powered-sast-tool/backend/services"
 	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
 )
 
 // ScanWorkflowInput represents the input for the scan workflow
@@ -19,12 +20,13 @@ type ScanWorkflowInput struct {
 
 // ScanWorkflowOutput represents the output from the scan workflow
 type ScanWorkflowOutput struct {
-	RepositoryID string
-	ScanID       string
-	Status       string
-	Message      string
-	StartTime    time.Time
-	EndTime      time.Time
+	RepositoryID    string
+	ScanID          string
+	Status          string
+	Message         string
+	StartTime       time.Time
+	EndTime         time.Time
+	Vulnerabilities []*services.Vulnerability
 }
 
 // ScanWorkflow orchestrates the repository scanning process
@@ -85,13 +87,44 @@ func ScanWorkflow(ctx workflow.Context, input ScanWorkflowInput) (*ScanWorkflowO
 		}, scanErr
 	}
 
+	// Convert the vulnerabilities from the activity output
+	var vulnerabilities []*services.Vulnerability
+	for _, v := range scanOutput.VulnerabilitiesFound {
+		vuln := &services.Vulnerability{
+			ID:          v.ID,
+			Type:        services.VulnerabilityType(v.Type),
+			FilePath:    v.FilePath,
+			LineStart:   v.LineStart,
+			LineEnd:     v.LineEnd,
+			Severity:    v.Severity,
+			Description: v.Description,
+			Remediation: v.Remediation,
+			Code:        v.Code,
+		}
+		vulnerabilities = append(vulnerabilities, vuln)
+	}
+
+	// Register query handler to expose results
+	workflow.SetQueryHandler(ctx, "scan_result", func() (*ScanWorkflowOutput, error) {
+		return &ScanWorkflowOutput{
+			RepositoryID:    input.RepositoryID,
+			ScanID:          scanOutput.ScanID,
+			Status:          "completed",
+			Message:         "Scan completed successfully",
+			StartTime:       startTime,
+			EndTime:         workflow.Now(ctx),
+			Vulnerabilities: vulnerabilities,
+		}, nil
+	})
+
 	// Successfully completed
 	return &ScanWorkflowOutput{
-		RepositoryID: input.RepositoryID,
-		ScanID:       scanOutput.ScanID,
-		Status:       "completed",
-		Message:      "Scan completed successfully",
-		StartTime:    startTime,
-		EndTime:      workflow.Now(ctx),
+		RepositoryID:    input.RepositoryID,
+		ScanID:          scanOutput.ScanID,
+		Status:          "completed",
+		Message:         "Scan completed successfully",
+		StartTime:       startTime,
+		EndTime:         workflow.Now(ctx),
+		Vulnerabilities: vulnerabilities,
 	}, nil
 }
