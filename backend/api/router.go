@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"strings"
@@ -9,13 +10,13 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
-
 	"github.com/ritikarora108/ai-powered-sast-tool/backend/api/middleware"
 	"github.com/ritikarora108/ai-powered-sast-tool/backend/db"
 	"github.com/ritikarora108/ai-powered-sast-tool/backend/handlers"
 	"github.com/ritikarora108/ai-powered-sast-tool/backend/internal/logger"
 	"github.com/ritikarora108/ai-powered-sast-tool/backend/services"
 	"go.temporal.io/sdk/client"
+	"go.uber.org/zap"
 )
 
 func NewRouter(temporalClient client.Client, dbQueries *db.Queries) *chi.Mux {
@@ -29,6 +30,29 @@ func NewRouter(temporalClient client.Client, dbQueries *db.Queries) *chi.Mux {
 	router.Use(chimiddleware.Recoverer)
 	router.Use(chimiddleware.Timeout(60 * time.Second))
 	router.Use(chimiddleware.RequestID) // Generate request IDs
+
+	// Add a custom error handler
+	router.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if err := recover(); err != nil {
+					log := logger.FromContext(r.Context())
+					log.Error("Panic in handler",
+						zap.Any("error", err),
+						zap.String("path", r.URL.Path),
+						zap.String("method", r.Method),
+					)
+
+					w.WriteHeader(http.StatusInternalServerError)
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(map[string]string{
+						"error": "Internal server error",
+					})
+				}
+			}()
+			next.ServeHTTP(w, r)
+		})
+	})
 
 	// Setup CORS
 	frontendURL := os.Getenv("FRONTEND_URL")
@@ -80,6 +104,7 @@ func NewRouter(temporalClient client.Client, dbQueries *db.Queries) *chi.Mux {
 		authHandler := handlers.NewAuthHandler()
 		r.Get("/google", authHandler.HandleGoogleLogin)
 		r.Get("/google/callback", authHandler.HandleGoogleLogin)
+		r.Post("/token", authHandler.HandleTokenExchange)
 	})
 
 	// Public scanning endpoint - no auth required
@@ -88,6 +113,18 @@ func NewRouter(temporalClient client.Client, dbQueries *db.Queries) *chi.Mux {
 	router.Get("/scan/{id}/status", repositoryHandler.GetScanStatus)
 	router.Get("/scan/{id}/results", repositoryHandler.GetScanResults)
 	router.Get("/scan/{id}/debug", repositoryHandler.DebugWorkflow)
+
+	// Direct repository routes (no /api prefix)
+	router.Route("/repositories", func(r chi.Router) {
+		// Apply authentication middleware
+		r.Use(middleware.AuthMiddleware)
+
+		r.Post("/", repositoryHandler.CreateRepository)
+		r.Get("/", repositoryHandler.ListRepositories)
+		r.Get("/{id}", repositoryHandler.GetRepository)
+		r.Post("/{id}/scan", repositoryHandler.ScanRepository)
+		r.Get("/{id}/vulnerabilities", repositoryHandler.GetVulnerabilities)
+	})
 
 	// Protected API routes
 	router.Route("/api", func(r chi.Router) {

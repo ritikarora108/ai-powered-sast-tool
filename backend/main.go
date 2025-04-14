@@ -93,30 +93,24 @@ func main() {
 	// Try to connect to the database
 	sqlDB, err := sql.Open("postgres", connStr)
 	if err != nil {
-		logger.Error("Unable to connect to database", zap.Error(err))
-		// Continue without database for development purposes
-		logger.Warn("Continuing without database connection - some features will be limited")
-		sqlDB = nil
-	} else {
-		// Test connection
-		err = sqlDB.Ping()
-		if err != nil {
-			logger.Error("Failed to ping database", zap.Error(err))
-			// Continue without database for development purposes
-			logger.Warn("Continuing without database connection - some features will be limited")
-			sqlDB = nil
-		} else {
-			logger.Info("Successfully connected to PostgreSQL database")
-			defer sqlDB.Close()
-		}
+		logger.Fatal("Unable to connect to database", zap.Error(err))
+		os.Exit(1)
 	}
+
+	// Test connection
+	// err = sqlDB.Ping()
+	// if err != nil {
+	// 	logger.Fatal("Failed to ping database", zap.Error(err))
+	// 	os.Exit(1)
+	// }
+
+	logger.Info("Successfully connected to PostgreSQL database")
+	defer sqlDB.Close()
 
 	// Initialize database queries
 	dbQueries := db.NewQueries()
-	if sqlDB != nil {
-		dbQueries.SetDB(sqlDB)
-		defer dbQueries.Close()
-	}
+	dbQueries.SetDB(sqlDB)
+	defer dbQueries.Close()
 
 	// Create router with the temporal client and database
 	logger.Info("Initializing API router")
