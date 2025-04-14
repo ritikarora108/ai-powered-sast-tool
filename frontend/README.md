@@ -1,6 +1,6 @@
-# Keygraph SAST Tool Frontend
+# AI-Powered SAST Tool Frontend
 
-This is the frontend component of the Keygraph AI-powered Static Application Security Testing (SAST) tool. It provides a user interface for scanning GitHub repositories for OWASP Top 10 vulnerabilities.
+This is the frontend component of the AI-powered Static Application Security Testing (SAST) tool. It provides a user interface for scanning GitHub repositories for OWASP Top 10 vulnerabilities.
 
 ## Features
 
@@ -47,7 +47,7 @@ This is the frontend component of the Keygraph AI-powered Static Application Sec
 
 ## Integration with Backend
 
-This frontend is designed to work with the Keygraph SAST Tool backend. The backend handles:
+This frontend is designed to work with the AI-Powered SAST Tool backend. The backend handles:
 
 - Repository cloning
 - Code scanning using OpenAI
@@ -58,4 +58,4 @@ Make sure the backend is running on the URL specified in your `.env.local` file.
 
 ## License
 
-Copyright © 2023 Keygraph. All rights reserved.
+Copyright © 2025 Ritik Arora. All rights reserved.

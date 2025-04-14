@@ -72,7 +72,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 </Transition.Child>
                 <div className="h-0 flex-1 overflow-y-auto pt-5 pb-4">
                   <div className="flex flex-shrink-0 items-center px-4">
-                    <h1 className="text-2xl font-bold text-indigo-600">Keygraph</h1>
+                    <h1 className="text-2xl font-bold text-indigo-600">AI-SAST</h1>
                   </div>
                   <nav className="mt-5 space-y-1 px-2">
                     {navigation.map((item) => (
@@ -138,7 +138,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <div className="flex min-h-0 flex-1 flex-col border-r border-gray-200 bg-white">
           <div className="flex flex-1 flex-col overflow-y-auto pt-5 pb-4">
             <div className="flex flex-shrink-0 items-center px-4">
-              <h1 className="text-2xl font-bold text-indigo-600">Keygraph</h1>
+              <h1 className="text-2xl font-bold text-indigo-600">AI-SAST</h1>
             </div>
             <nav className="mt-5 flex-1 space-y-1 bg-white px-2">
               {navigation.map((item) => (

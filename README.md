@@ -83,6 +83,27 @@ go run main.go
 3. View scan results categorized by OWASP Top 10 vulnerabilities
 4. Review detailed findings and recommendations
 
+## User Flows
+
+### Authentication
+
+- Google Sign-In to protect all routes
+- No user management or admin panel needed
+
+### Scanning Workflow
+
+1. User submits a GitHub repo URL
+2. Backend clones the repo and analyzes the codebase for OWASP Top 10 vulnerabilities using AI
+3. Results are persisted to PostgreSQL
+4. Results are displayed categorized by OWASP Top 10 on the frontend
+
+### UI Views
+
+- Home Page
+- "Add GitHub Repo" form
+- Table of scanned repos with status
+- Repo Detail View with findings organized by OWASP Top 10 category
+
 ## Project Structure
 
 ```
@@ -109,4 +130,4 @@ ai-powered-sast-tool/
 
 ## License
 
-Copyright © 2023 Keygraph. All rights reserved.
+Copyright © 2025 Ritik Arora. All rights reserved.
