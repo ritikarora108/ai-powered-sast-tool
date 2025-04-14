@@ -1,38 +1,18 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.20-alpine AS builder
 
 WORKDIR /app
-
-# Install necessary dependencies
-RUN apk add --no-cache git
-
-# Copy go mod and sum files
-COPY go.mod go.sum ./
-
-# Download dependencies
+COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 
-# Copy source code
-COPY . .
+COPY backend/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
 
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -o main .
+FROM alpine:3.17
+RUN apk --no-cache add ca-certificates
 
-# Use a small image for the final stage
-FROM alpine:3.19
-
-WORKDIR /app
-
-# Install necessary runtime dependencies
-RUN apk add --no-cache ca-certificates git
-
-# Copy the binary from the builder stage
+WORKDIR /root/
 COPY --from=builder /app/main .
+COPY --from=builder /app/.env .
 
-# Copy BAML files
-COPY --from=builder /app/baml ./baml
-
-# Expose port
 EXPOSE 8080
-
-# Run the application
-CMD ["./main"] 
+CMD ["./main"]
