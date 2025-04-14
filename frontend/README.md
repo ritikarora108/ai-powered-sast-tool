@@ -56,6 +56,23 @@ This frontend is designed to work with the AI-Powered SAST Tool backend. The bac
 
 Make sure the backend is running on the URL specified in your `.env.local` file.
 
+## Project Structure
+
+```
+frontend/
+├── public/                 # Static assets
+├── src/                    # Source code
+│   ├── app/                # Next.js app router
+│   ├── components/         # React components
+│   ├── services/           # API services
+│   └── types/              # TypeScript types
+├── .env.local              # Environment variables
+├── Dockerfile              # Frontend Docker config
+├── next.config.ts          # Next.js configuration
+├── package.json            # NPM dependencies
+└── tsconfig.json           # TypeScript configuration
+```
+
 ## License
 
 Copyright © 2025 Ritik Arora. All rights reserved.

@@ -147,6 +147,40 @@ The server will start on port 8080 by default. You can change this by setting th
 
 The backend provides all necessary API endpoints for frontend integration. The frontend can authenticate users via Google Sign-In and then use the protected API endpoints to interact with the application.
 
+## Project Structure
+
+```
+backend/
+├── api/                    # API routes and handlers
+│   └── middleware/         # API middleware
+├── baml/                   # BAML AI configuration
+│   └── code_scanner.baml   # BAML prompts
+├── db/                     # Database access
+│   ├── migrations/         # SQL migrations
+│   ├── query/              # SQL queries
+│   ├── schema/             # Database schema
+│   └── sqlc/               # Generated database code
+├── handlers/               # API handlers
+│   ├── repository.go       # Repository handlers
+│   ├── auth.go             # Authentication handlers
+│   └── user.go             # User handlers
+├── internal/               # Internal packages
+│   └── logger/             # Logging utilities
+├── services/               # Business logic
+│   ├── github.go           # GitHub API integration
+│   ├── auth.go             # Authentication service
+│   ├── scanner.go          # Vulnerability scanner
+│   └── openai.go           # OpenAI integration
+├── temporal/               # Temporal workflows
+│   ├── activities.go       # Workflow activities
+│   └── workflows.go        # Workflow definitions
+├── scripts/                # Backend utility scripts
+├── .env                    # Environment variables
+├── go.mod                  # Go dependencies
+├── go.sum                  # Go dependency checksums
+└── main.go                 # Entry point
+```
+
 ## Development
 
 To add a new feature or fix a bug:

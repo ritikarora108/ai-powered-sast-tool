@@ -108,24 +108,61 @@ go run main.go
 
 ```
 ai-powered-sast-tool/
-├── backend/              # Go backend
-│   ├── api/              # API routes and handlers
-│   ├── baml/             # BAML AI configuration
-│   ├── db/               # Database access and migrations
-│   ├── handlers/         # API handlers
-│   ├── internal/         # Internal packages
-│   ├── services/         # Business logic
-│   ├── temporal/         # Temporal workflows
-│   └── main.go           # Entry point
-├── frontend/             # Next.js frontend
-│   ├── public/           # Static assets
-│   ├── src/              # Source code
-│   │   ├── app/          # Next.js app router
-│   │   ├── components/   # React components
-│   │   ├── services/     # API services
-│   │   └── types/        # TypeScript types
-│   └── next.config.js    # Next.js configuration
-└── docker-compose.yml    # Docker Compose configuration
+├── backend/                    # Go backend
+│   ├── api/                    # API routes and handlers
+│   │   └── middleware/         # API middleware
+│   ├── baml/                   # BAML AI configuration
+│   │   └── code_scanner.baml   # BAML prompts
+│   ├── db/                     # Database access
+│   │   ├── migrations/         # SQL migrations
+│   │   ├── query/              # SQL queries
+│   │   ├── schema/             # Database schema
+│   │   └── sqlc/               # Generated database code
+│   ├── handlers/               # API handlers
+│   │   ├── repository.go       # Repository handlers
+│   │   ├── auth.go             # Authentication handlers
+│   │   └── user.go             # User handlers
+│   ├── internal/               # Internal packages
+│   │   └── logger/             # Logging utilities
+│   ├── services/               # Business logic
+│   │   ├── github.go           # GitHub API integration
+│   │   ├── auth.go             # Authentication service
+│   │   ├── scanner.go          # Vulnerability scanner
+│   │   └── openai.go           # OpenAI integration
+│   ├── temporal/               # Temporal workflows
+│   │   ├── activities.go       # Workflow activities
+│   │   └── workflows.go        # Workflow definitions
+│   ├── scripts/                # Backend utility scripts
+│   ├── .env                    # Environment variables
+│   ├── go.mod                  # Go dependencies
+│   ├── go.sum                  # Go dependency checksums
+│   └── main.go                 # Entry point
+├── frontend/                   # Next.js frontend
+│   ├── public/                 # Static assets
+│   ├── src/                    # Source code
+│   │   ├── app/                # Next.js app router
+│   │   ├── components/         # React components
+│   │   ├── services/           # API services
+│   │   └── types/              # TypeScript types
+│   ├── .env.local              # Environment variables
+│   ├── Dockerfile              # Frontend Docker config
+│   ├── next.config.ts          # Next.js configuration
+│   ├── package.json            # NPM dependencies
+│   └── tsconfig.json           # TypeScript configuration
+├── deploy/                     # Deployment configuration
+│   ├── docker-compose.yml      # Docker Compose config
+│   ├── Dockerfile.backend      # Backend Docker config
+│   └── Dockerfile.frontend     # Frontend Docker config
+├── docs/                       # Documentation
+│   ├── PRD.md                  # Product Requirements Document
+│   └── Technical_Spec.md       # Technical Specification
+├── scripts/                    # Utility scripts
+│   ├── test_scan.sh            # Scan testing script
+│   ├── setup_db.sh             # Database setup script
+│   └── generate_sqlc.sh        # SQL code generation
+├── .env.sample                 # Sample environment variables
+├── .gitignore                  # Git ignore file
+└── LICENSE                     # License information
 ```
 
 ## License
