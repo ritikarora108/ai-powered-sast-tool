@@ -9,19 +9,24 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"time"
 
 	"github.com/go-git/go-git/v5"
-	"github.com/google/go-github/v60/github"
 	"github.com/ritikarora108/ai-powered-sast-tool/backend/db"
 )
 
 // Repository represents a GitHub repository
 type Repository struct {
-	ID       string
-	Name     string
-	Owner    string
-	URL      string
-	CloneURL string
+	ID         string
+	Name       string
+	Owner      string
+	URL        string
+	CloneURL   string
+	CreatedAt  string
+	UpdatedAt  string
+	LastScanAt *string
+	Status     string
 }
 
 // GitHubService defines the interface for GitHub operations
@@ -66,7 +71,6 @@ type gitHubService struct {
 }
 
 func (s *gitHubService) FetchRepositoryInfo(ctx context.Context, owner, repo string) (*Repository, error) {
-
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo), nil)
 	if err != nil {
@@ -146,23 +150,78 @@ func (s *gitHubService) ListFiles(ctx context.Context, repoDir string, extension
 
 func (s *gitHubService) ListRepositories() ([]*Repository, error) {
 	ctx := context.Background()
-	client := github.NewClient(nil)
 
-	// Temporary implementation until DB is fully set up
-	repos, _, err := client.Repositories.ListByUser(ctx, "ritikarora108", nil)
+	// Get the database connection
+	db := s.db.GetDB()
+	if db == nil {
+		return nil, fmt.Errorf("database connection not available")
+	}
+
+	// Check if repositories table exists
+	var tableExists bool
+	err := db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT FROM information_schema.tables 
+			WHERE table_schema = 'public'
+			AND table_name = 'repositories'
+		)
+	`).Scan(&tableExists)
+
+	if err != nil || !tableExists {
+		// If there's an error or the table doesn't exist, return the error
+		return nil, fmt.Errorf("repositories table does not exist: %w", err)
+	}
+
+	// Query repositories from the database
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, name, owner, url, clone_url, created_at, updated_at, last_scan_at, status
+		FROM repositories
+		ORDER BY updated_at DESC
+	`)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list repositories: %w", err)
+		// If there's a query error, return the error
+		return nil, fmt.Errorf("failed to query repositories: %w", err)
+	}
+	defer rows.Close()
+
+	var repositories []*Repository
+	for rows.Next() {
+		repo := &Repository{}
+		var lastScanAt sql.NullString
+		var status sql.NullString
+
+		err := rows.Scan(
+			&repo.ID,
+			&repo.Name,
+			&repo.Owner,
+			&repo.URL,
+			&repo.CloneURL,
+			&repo.CreatedAt,
+			&repo.UpdatedAt,
+			&lastScanAt,
+			&status,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan repository row: %w", err)
+		}
+
+		if lastScanAt.Valid {
+			repo.LastScanAt = &lastScanAt.String
+		}
+		if status.Valid {
+			repo.Status = status.String
+		} else {
+			repo.Status = "pending"
+		}
+
+		repositories = append(repositories, repo)
 	}
 
-	var result []*Repository
-	for _, repo := range repos {
-		result = append(result, &Repository{
-			ID:   fmt.Sprintf("%d", repo.GetID()),
-			Name: repo.GetName(),
-			URL:  repo.GetHTMLURL(),
-		})
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error while iterating over repository rows: %w", err)
 	}
-	return result, nil
+
+	return repositories, nil
 }
 
 func (s *gitHubService) AddUserRepository(ctx context.Context, userID string, repoURL string) (*Repository, error) {
@@ -178,34 +237,177 @@ func (s *gitHubService) AddUserRepository(ctx context.Context, userID string, re
 		return nil, err
 	}
 
-	// Temporary implementation until DB is fully set up
-	return repoInfo, nil
-}
-
-func (s *gitHubService) GetRepository(id string) (*Repository, error) {
-	ctx := context.Background()
-	client := github.NewClient(nil)
-	repo, _, err := client.Repositories.Get(ctx, "ritikarora108", "test")
-	if err != nil {
-		return nil, fmt.Errorf("failed to get repository: %w", err)
-	}
-	return &Repository{
-		ID:   fmt.Sprintf("%d", repo.GetID()),
-		Name: repo.GetName(),
-		URL:  repo.GetHTMLURL(),
-	}, nil
-}
-
-func (s *gitHubService) GetRepositoryVulnerabilities(ctx context.Context, repoID string) ([]*Vulnerability, error) {
 	// Get the database connection
 	db := s.db.GetDB()
 	if db == nil {
 		return nil, fmt.Errorf("database connection not available")
 	}
 
+	// Check if repository already exists
+	var existingRepoID string
+	err = db.QueryRowContext(ctx,
+		`SELECT id FROM repositories WHERE owner = $1 AND name = $2`,
+		owner, name).Scan(&existingRepoID)
+
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("error checking for existing repository: %w", err)
+	}
+
+	if err == sql.ErrNoRows {
+		// Repository doesn't exist, create it
+		_, err = db.ExecContext(ctx,
+			`INSERT INTO repositories (id, owner, name, url, clone_url, created_at, updated_at, status) 
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			repoInfo.ID, owner, name, repoInfo.URL, repoInfo.CloneURL,
+			time.Now().Format(time.RFC3339), time.Now().Format(time.RFC3339), "pending")
+		if err != nil {
+			return nil, fmt.Errorf("failed to store repository information: %w", err)
+		}
+
+		// Also add repository to user_repositories join table
+		_, err = db.ExecContext(ctx,
+			`INSERT INTO user_repositories (user_id, repository_id) VALUES ($1, $2)`,
+			userID, repoInfo.ID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to associate repository with user: %w", err)
+		}
+	} else {
+		// Repository exists, update it
+		_, err = db.ExecContext(ctx,
+			`UPDATE repositories SET url = $1, clone_url = $2, updated_at = $3 WHERE id = $4`,
+			repoInfo.URL, repoInfo.CloneURL, time.Now().Format(time.RFC3339), existingRepoID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to update repository information: %w", err)
+		}
+
+		// Check if repository is already associated with user
+		var exists bool
+		err = db.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM user_repositories WHERE user_id = $1 AND repository_id = $2)`,
+			userID, existingRepoID).Scan(&exists)
+		if err != nil {
+			return nil, fmt.Errorf("error checking user-repository association: %w", err)
+		}
+
+		if !exists {
+			// Add repository to user_repositories join table
+			_, err = db.ExecContext(ctx,
+				`INSERT INTO user_repositories (user_id, repository_id) VALUES ($1, $2)`,
+				userID, existingRepoID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to associate repository with user: %w", err)
+			}
+		}
+
+		// Use the existing ID
+		repoInfo.ID = existingRepoID
+	}
+
+	return repoInfo, nil
+}
+
+func (s *gitHubService) GetRepository(id string) (*Repository, error) {
+	ctx := context.Background()
+
+	// Check if this is a sample repository ID and return it if so
+	if strings.HasPrefix(id, "sample-") {
+		return nil, fmt.Errorf("repository with ID %s not found", id)
+	}
+
+	// Get the database connection
+	db := s.db.GetDB()
+	if db == nil {
+		return nil, fmt.Errorf("database connection not available")
+	}
+
+	// Check if repositories table exists
+	var tableExists bool
+	err := db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT FROM information_schema.tables 
+			WHERE table_schema = 'public'
+			AND table_name = 'repositories'
+		)
+	`).Scan(&tableExists)
+
+	if err != nil || !tableExists {
+		return nil, fmt.Errorf("repositories table does not exist")
+	}
+
+	// Query repository from the database
+	repo := &Repository{}
+	var lastScanAt sql.NullString
+	var status sql.NullString
+
+	err = db.QueryRowContext(ctx, `
+		SELECT id, name, owner, url, clone_url, created_at, updated_at, last_scan_at, status
+		FROM repositories
+		WHERE id = $1
+	`, id).Scan(
+		&repo.ID,
+		&repo.Name,
+		&repo.Owner,
+		&repo.URL,
+		&repo.CloneURL,
+		&repo.CreatedAt,
+		&repo.UpdatedAt,
+		&lastScanAt,
+		&status,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("repository with ID %s not found", id)
+		}
+		return nil, fmt.Errorf("failed to get repository: %w", err)
+	}
+
+	if lastScanAt.Valid {
+		repo.LastScanAt = &lastScanAt.String
+	}
+	if status.Valid {
+		repo.Status = status.String
+	} else {
+		repo.Status = "pending"
+	}
+
+	return repo, nil
+}
+
+func (s *gitHubService) GetRepositoryVulnerabilities(ctx context.Context, repoID string) ([]*Vulnerability, error) {
+	// Check if this is a sample repository ID and return an error
+	if strings.HasPrefix(repoID, "sample-") {
+		return nil, fmt.Errorf("repository with ID %s not found", repoID)
+	}
+
+	// Get the database connection
+	db := s.db.GetDB()
+	if db == nil {
+		return nil, fmt.Errorf("database connection not available")
+	}
+
+	// Check if necessary tables exist
+	var tablesExist bool
+	err := db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT FROM information_schema.tables 
+			WHERE table_schema = 'public'
+			AND table_name = 'scans'
+		) AND EXISTS (
+			SELECT FROM information_schema.tables 
+			WHERE table_schema = 'public'
+			AND table_name = 'vulnerabilities'
+		)
+	`).Scan(&tablesExist)
+
+	if err != nil || !tablesExist {
+		// If tables don't exist, return empty list
+		return []*Vulnerability{}, nil
+	}
+
 	// First, find the latest scan for this repository
 	var scanID string
-	err := db.QueryRowContext(ctx,
+	err = db.QueryRowContext(ctx,
 		`SELECT id FROM scans WHERE repository_id = $1 ORDER BY created_at DESC LIMIT 1`,
 		repoID).Scan(&scanID)
 	if err != nil {
@@ -229,11 +431,12 @@ func (s *gitHubService) GetRepositoryVulnerabilities(ctx context.Context, repoID
 	var vulnerabilities []*Vulnerability
 	for rows.Next() {
 		vuln := &Vulnerability{}
+		var vulnerabilityType string
 		var remediation, codeSnippet sql.NullString
 
 		err := rows.Scan(
 			&vuln.ID,
-			&vuln.Type,
+			&vulnerabilityType,
 			&vuln.FilePath,
 			&vuln.LineStart,
 			&vuln.LineEnd,
@@ -245,6 +448,8 @@ func (s *gitHubService) GetRepositoryVulnerabilities(ctx context.Context, repoID
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan vulnerability row: %w", err)
 		}
+
+		vuln.Type = VulnerabilityType(vulnerabilityType)
 
 		if remediation.Valid {
 			vuln.Remediation = remediation.String
@@ -265,14 +470,59 @@ func (s *gitHubService) GetRepositoryVulnerabilities(ctx context.Context, repoID
 
 // Helper function to parse GitHub URLs
 func parseGitHubURL(url string) (owner, name string, err error) {
-	// Simple implementation for now
-	return "ritikarora108", "test", nil
+	// GitHub URL formats:
+	// - https://github.com/owner/repo
+	// - https://github.com/owner/repo.git
+	// - git@github.com:owner/repo.git
+
+	if strings.HasPrefix(url, "https://github.com/") {
+		parts := strings.Split(strings.TrimPrefix(url, "https://github.com/"), "/")
+		if len(parts) < 2 {
+			return "", "", fmt.Errorf("invalid GitHub URL format")
+		}
+		owner = parts[0]
+		name = strings.TrimSuffix(parts[1], ".git")
+		return owner, name, nil
+	} else if strings.HasPrefix(url, "git@github.com:") {
+		parts := strings.Split(strings.TrimPrefix(url, "git@github.com:"), "/")
+		if len(parts) < 2 {
+			return "", "", fmt.Errorf("invalid GitHub URL format")
+		}
+		owner = parts[0]
+		name = strings.TrimSuffix(parts[1], ".git")
+		return owner, name, nil
+	}
+
+	return "", "", fmt.Errorf("unsupported GitHub URL format")
 }
 
 func (s *gitHubService) CreateRepository(owner, name, url string) (string, error) {
-	// Temporary implementation - in a real app, we would create the repo on GitHub
-	// and store it in our database
-	return "123", nil
+	// Get the database connection
+	db := s.db.GetDB()
+	if db == nil {
+		return "", fmt.Errorf("database connection not available")
+	}
+
+	// Generate a repository ID (using nano timestamp as a simple solution)
+	repoID := fmt.Sprintf("repo-%d", time.Now().UnixNano())
+
+	// Parse the URL to get the clone URL
+	parsedURL := url
+	if !strings.HasSuffix(parsedURL, ".git") {
+		parsedURL = parsedURL + ".git"
+	}
+
+	// Insert the repository into the database
+	_, err := db.Exec(
+		`INSERT INTO repositories (id, owner, name, url, clone_url, created_at, updated_at, status) 
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		repoID, owner, name, url, parsedURL,
+		time.Now().Format(time.RFC3339), time.Now().Format(time.RFC3339), "pending")
+	if err != nil {
+		return "", fmt.Errorf("failed to store repository information: %w", err)
+	}
+
+	return repoID, nil
 }
 
 // GetDatabaseConnection returns the database connection

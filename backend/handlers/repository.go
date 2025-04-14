@@ -50,6 +50,11 @@ func (h *RepositoryHandler) RegisterRoutes(r chi.Router) {
 	r.Post("/repositories/{id}/scan", h.ScanRepository)
 	r.Get("/repositories/{id}/vulnerabilities", h.GetVulnerabilities)
 
+	// Register the scan public repository endpoint
+	r.Post("/scan", h.ScanPublicRepository)
+	r.Get("/scan/{id}/status", h.GetScanStatus)
+	r.Get("/scan/{id}/results", h.GetScanResults)
+
 	// Add debug endpoint
 	r.Get("/scan/{id}/debug", h.DebugWorkflow)
 }
@@ -474,7 +479,16 @@ func (h *RepositoryHandler) GetRepository(w http.ResponseWriter, r *http.Request
 
 // ScanRepository handles scanning a repository for vulnerabilities
 func (h *RepositoryHandler) ScanRepository(w http.ResponseWriter, r *http.Request) {
+	log := logger.FromContext(r.Context())
 	id := chi.URLParam(r, "id")
+
+	// Get repository info first to use in workflow
+	repo, err := h.GitHubService.GetRepository(id)
+	if err != nil {
+		log.Error("Failed to get repository info", zap.String("repo_id", id), zap.Error(err))
+		http.Error(w, fmt.Sprintf("Failed to get repository info: %v", err), http.StatusInternalServerError)
+		return
+	}
 
 	// Initiate Temporal workflow for repository scanning
 	workflowOptions := client.StartWorkflowOptions{
@@ -484,19 +498,34 @@ func (h *RepositoryHandler) ScanRepository(w http.ResponseWriter, r *http.Reques
 
 	workflowInput := temporal.ScanWorkflowInput{
 		RepositoryID:   id,
-		Owner:          "placeholder-owner",
-		Name:           "placeholder-name",
-		CloneURL:       "placeholder-url",
-		VulnTypes:      []string{"Injection", "Broken Access Control"},
-		FileExtensions: []string{".go", ".js"},
+		Owner:          repo.Owner,
+		Name:           repo.Name,
+		CloneURL:       repo.CloneURL,
+		VulnTypes:      []string{"Injection", "Broken Access Control", "Cryptographic Failures", "Insecure Design", "Security Misconfiguration"},
+		FileExtensions: []string{".go", ".js", ".py", ".java", ".php", ".html", ".css", ".ts", ".jsx", ".tsx"},
 	}
 
 	we, err := h.TemporalClient.ExecuteWorkflow(context.Background(), workflowOptions, temporal.ScanWorkflow, workflowInput)
 	if err != nil {
+		log.Error("Failed to start scan workflow", zap.String("repo_id", id), zap.Error(err))
 		http.Error(w, fmt.Sprintf("Failed to start scan workflow: %v", err), http.StatusInternalServerError)
 		return
 	}
 
+	// Update repository status to in_progress
+	dbConn := h.GitHubService.GetDatabaseConnection()
+	if dbConn != nil {
+		_, err := dbConn.ExecContext(r.Context(),
+			`UPDATE repositories SET status = $1, updated_at = NOW() WHERE id = $2`,
+			"in_progress", id)
+		if err != nil {
+			log.Error("Failed to update repository status", zap.String("repo_id", id), zap.Error(err))
+		}
+	}
+
+	log.Info("Scan workflow initiated successfully", zap.String("repo_id", id), zap.String("run_id", we.GetRunID()))
+
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{
 		"id":     id,
