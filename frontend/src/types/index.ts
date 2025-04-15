@@ -16,6 +16,7 @@ export interface ScanStatus {
   run_id: string;
   repository: string;
   message?: string;
+  results_available?: boolean;
 }
 
 export interface Vulnerability {

@@ -14,8 +14,7 @@ export default function RepositoriesPage() {
   const [repositories, setRepositories] = useState<Repository[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
-  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     if (status === 'unauthenticated') {
@@ -29,91 +28,47 @@ export default function RepositoriesPage() {
     }
   }, [status]);
 
-  // Clean up polling on unmount
-  useEffect(() => {
-    return () => {
-      if (pollingInterval) {
-        clearInterval(pollingInterval);
-      }
-    };
-  }, [pollingInterval]);
-
   const loadRepositories = async () => {
     setIsLoading(true);
     setError(null);
     
     try {
+      console.log('Attempting to load repositories...');
       const response = await repositoryApi.getRepositories();
+      console.log('Repository API call response:', response);
+      
       if (response.data) {
-        // Log the response for debugging
-        console.log('Repositories response:', response.data);
-        
-        // Ensure each repository has a valid ID
-        const validRepositories = response.data.map((repo, index) => {
-          if (!repo.id) {
-            // Generate a temporary ID if missing
-            return { 
-              ...repo, 
-              id: `temp-${index}-${Date.now()}` // More unique temporary ID
-            };
-          }
-          return repo;
-        });
-        
-        setRepositories(validRepositories);
-        setLastRefreshed(new Date());
-        
-        // Check if any repositories are in progress and start polling if so
-        const hasInProgressScans = validRepositories.some(repo => repo.status === 'in_progress');
-        if (hasInProgressScans) {
-          startPolling();
+        // Make sure response.data is an array
+        if (Array.isArray(response.data)) {
+          setRepositories(response.data);
+          console.log(`Loaded ${response.data.length} repositories`, response.data);
+        } else {
+          console.error('Repository data is not an array:', response.data);
+          setError('Invalid data format received from server');
+          setRepositories([]);
         }
       } else if (response.error) {
+        console.error('API returned error:', response.error);
         setError(response.error);
+        setRepositories([]);
+      } else {
+        console.error('No data or error in response:', response);
+        setError('No data received from server');
+        setRepositories([]);
       }
     } catch (err) {
+      console.error('Failed to load repositories:', err);
       setError('Failed to load repositories');
-      console.error(err);
+      setRepositories([]);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const startPolling = () => {
-    // Stop any existing polling
-    if (pollingInterval) {
-      clearInterval(pollingInterval);
-    }
-    
-    // Check repository status every 5 seconds
-    const interval = setInterval(async () => {
-      console.log('Polling for repository status updates...');
-      
-      try {
-        const response = await repositoryApi.getRepositories();
-        if (response.data) {
-          // Update repositories with latest data
-          setRepositories(response.data);
-          
-          // Stop polling if no more in-progress scans
-          const hasInProgressScans = response.data.some(repo => repo.status === 'in_progress');
-          if (!hasInProgressScans) {
-            console.log('No more in-progress scans. Stopping polling.');
-            clearInterval(interval);
-            setPollingInterval(null);
-          }
-        }
-      } catch (err) {
-        console.error('Error polling for repository updates:', err);
-        // Don't stop polling on error, just continue
-      }
-    }, 5000);
-    
-    setPollingInterval(interval);
-  };
-
-  const handleRefresh = () => {
-    loadRepositories();
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await loadRepositories();
+    setRefreshing(false);
   };
 
   if (status === 'loading' || isLoading) {
@@ -135,20 +90,20 @@ export default function RepositoriesPage() {
             <div className="flex space-x-3">
               <button
                 onClick={handleRefresh}
-                disabled={isLoading}
-                className="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                disabled={refreshing}
               >
-                {isLoading ? (
-                  <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-gray-700" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
+                {refreshing ? (
+                  <>
+                    <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Refreshing...
+                  </>
                 ) : (
-                  <svg xmlns="http://www.w3.org/2000/svg" className="-ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
+                  'Refresh'
                 )}
-                {isLoading ? 'Refreshing...' : 'Refresh'}
               </button>
               <Link
                 href="/dashboard"
@@ -158,12 +113,6 @@ export default function RepositoriesPage() {
               </Link>
             </div>
           </div>
-          
-          {lastRefreshed && (
-            <p className="text-xs text-gray-500 mt-1">
-              Last refreshed: {lastRefreshed.toLocaleString()}
-            </p>
-          )}
           
           {error && (
             <div className="mt-4 p-4 bg-red-50 text-red-700 rounded-md">

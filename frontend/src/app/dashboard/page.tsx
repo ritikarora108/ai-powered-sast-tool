@@ -17,14 +17,11 @@ export default function Dashboard() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
-  const [pollingScanId, setPollingScandId] = useState<string | null>(null);
-  const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
-  const [scannedRepoDetails, setScannedRepoDetails] = useState<{id: string, owner: string, name: string} | null>(null);
-  const [githubUrl, setGithubUrl] = useState('');
   const [scanId, setScanId] = useState<string | null>(null);
   const [repoId, setRepoId] = useState<string | null>(null);
   const [repoDetails, setRepoDetails] = useState<{ owner: string; name: string } | null>(null);
-  const [isPolling, setIsPolling] = useState(false);
+  const [scannedRepoDetails, setScannedRepoDetails] = useState<{id: string, owner: string, name: string} | null>(null);
+  const [githubUrl, setGithubUrl] = useState('');
 
   // Redirect if not authenticated
   useEffect(() => {
@@ -57,91 +54,32 @@ export default function Dashboard() {
     }
   }, [error, retryCount]);
 
-  // Clean up polling interval on unmount
+  // Clean up any timers on unmount
   useEffect(() => {
     return () => {
-      if (pollingInterval) {
-        clearInterval(pollingInterval);
-      }
+      // Cleanup
     };
-  }, [pollingInterval]);
-
-  // Poll for scan status updates
-  useEffect(() => {
-    if (pollingScanId) {
-      const pollForScanStatus = async () => {
-        try {
-          console.log(`Checking scan status for ${pollingScanId}...`);
-          const response = await repositoryApi.getScanStatus(pollingScanId);
-          
-          if (response.data && response.data.status) {
-            console.log(`Current scan status: ${response.data.status}`);
-            
-            // If scan is completed or failed, stop polling and refresh repos
-            if (response.data.status === 'completed' || 
-                response.data.status === 'failed' || 
-                response.data.status === 'canceled' || 
-                response.data.status === 'timed_out') {
-              console.log(`Scan ${pollingScanId} ${response.data.status}. Stopping polling.`);
-              if (pollingInterval) {
-                clearInterval(pollingInterval);
-                setPollingInterval(null);
-              }
-              setPollingScandId(null);
-              
-              // Reload repositories to see updated status
-              loadRepositories();
-              
-              // Show notification if needed
-              if (response.data.status === 'completed') {
-                // Display completed notification
-                setScanStatus(prev => ({
-                  ...prev!,
-                  status: 'completed',
-                  message: `Scan completed successfully! View details to see results.`
-                }));
-                
-                // Clear notification after 30 seconds
-                setTimeout(() => {
-                  setScanStatus(null);
-                }, 30000);
-              }
-            }
-          }
-        } catch (err) {
-          console.error('Error checking scan status:', err);
-        }
-      };
-      
-      // Initial check
-      pollForScanStatus();
-      
-      // Set interval to check every 5 seconds
-      const interval = setInterval(pollForScanStatus, 5000);
-      setPollingInterval(interval);
-      
-      // Clean up on unmount
-      return () => clearInterval(interval);
-    }
-  }, [pollingScanId]);
+  }, []);
 
   const loadRepositories = async () => {
     setIsLoading(true);
     setError(null);
     
+    console.log('Loading repositories...');
+    
     try {
-      console.log('Loading repositories...');
       const response = await repositoryApi.getRepositories();
+      
       if (response.data) {
+        console.log(`Loaded ${response.data.length} repositories`);
         setRepositories(response.data);
-        console.log('Successfully loaded repositories');
       } else if (response.error) {
-        setError(`${response.error} (Status: ${response.status})`);
-        console.error('Repository load error:', response);
+        console.error('Error loading repositories:', response.error);
+        setError(response.error);
       }
     } catch (err) {
-      setError('Failed to load repositories');
-      console.error('Repository load exception:', err);
+      console.error('Failed to load repositories:', err);
+      setError('Failed to load repositories. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -149,56 +87,50 @@ export default function Dashboard() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!githubUrl.trim()) return;
-
+    
+    if (!repoUrl) {
+      return;
+    }
+    
     setIsLoading(true);
     setScanStatus(null);
-    setScanId(null);
-    setRepoId(null);
-    setRepoDetails(null);
-
+    
+    console.log(`Submitting repository: ${repoUrl}`);
+    
     try {
-      // Parse owner and repo name from the GitHub URL
-      const urlMatch = githubUrl.match(/github\.com\/([^\/]+)\/([^\/]+)/);
-      const owner = urlMatch ? urlMatch[1] : '';
-      const name = urlMatch ? urlMatch[2] : '';
-
-      if (owner && name) {
+      // Extract owner and name from repo URL
+      const match = repoUrl.match(/github\.com\/([^\/]+)\/([^\/]+)/);
+      if (match) {
+        const owner = match[1];
+        const name = match[2].replace(/\.git$/, '');
         setRepoDetails({ owner, name });
+        
+        console.log(`Extracted owner: ${owner}, name: ${name}`);
       }
-
-      const response = await repositoryApi.submitRepository(githubUrl);
-      if (response.data && response.data.scan_id) {
+      
+      const response = await repositoryApi.submitRepository(repoUrl);
+      
+      if (response.data) {
+        setScanStatus(response.data);
         setScanId(response.data.scan_id);
+        
+        // No need to start polling here
+        // Instead, just update UI to show scan has started
+        console.log('Scan submitted successfully:', response.data);
         setScanStatus({
           scan_id: response.data.scan_id,
-          status: response.data.status,
+          status: 'in_progress',
           run_id: response.data.run_id || '',
           repository: response.data.repository || '',
-          message: 'Scan initiated successfully!'
+          message: 'Scan has been submitted. Please refresh the page to check for results.'
         });
         
-        // Extract repository ID from the response
-        const repository = response.data.repository as string;
-        if (repository) {
-          // First check if repository is actually a database ID
-          if (/^[a-f0-9-]+$/.test(repository)) {
-            setRepoId(repository);
-          } else {
-            // Repository might be a URL - try to find matching repo by URL
-            const matchingRepo = repositories.find(repo => 
-              repo.url === repository
-            );
-            if (matchingRepo) {
-              setRepoId(matchingRepo.id);
-            } else {
-              console.warn('Could not determine repository ID from scan response');
-            }
-          }
-        }
-        
-        startPolling(response.data.scan_id);
+        // Refresh repositories to see the new one
+        setTimeout(() => {
+          loadRepositories();
+        }, 2000);
       } else if (response.error) {
+        console.error('Error submitting repository:', response.error);
         setScanStatus({
           scan_id: '',
           status: 'error',
@@ -219,92 +151,6 @@ export default function Dashboard() {
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const startPolling = (id: string) => {
-    setIsPolling(true);
-    // Clear any existing interval
-    if (pollingInterval) {
-      clearInterval(pollingInterval);
-    }
-
-    const interval = setInterval(async () => {
-      try {
-        const response = await repositoryApi.getScanStatus(id);
-        
-        // Only process if we have data
-        if (!response.data) return;
-        
-        // Update scan status with the response data
-        setScanStatus({
-          scan_id: response.data.scan_id,
-          status: response.data.status,
-          run_id: response.data.run_id || '',
-          repository: response.data.repository || '',
-          message: response.data.status === 'completed' 
-            ? 'Scan completed successfully! View details to see results.'
-            : response.data.status === 'error'
-            ? 'Scan failed. Please try again.'
-            : 'Scan in progress...'
-        });
-
-        // Check if scan has completed or failed
-        const isComplete = ['completed', 'error'].includes(response.data.status);
-        if (!isComplete) return;
-        
-        // Clear the polling interval
-        clearInterval(interval);
-        setIsPolling(false);
-        setPollingInterval(null);
-        
-        // Handle repository ID if available
-        if (response.data.repository) {
-          const repoUrl = response.data.repository as string;
-          // Check if it's a UUID (likely a database ID)
-          if (/^[a-f0-9-]+$/.test(repoUrl)) {
-            setRepoId(repoUrl);
-          } else {
-            // It's a URL - find matching repository
-            const matchingRepo = repositories.find(repo => repo.url === repoUrl);
-            if (matchingRepo) {
-              setRepoId(matchingRepo.id);
-            } else {
-              // Try to reload repositories to find the new one
-              const repoResponse = await repositoryApi.getRepositories();
-              if (repoResponse.data) {
-                const newMatchingRepo = repoResponse.data.find(repo => repo.url === repoUrl);
-                if (newMatchingRepo) {
-                  setRepoId(newMatchingRepo.id);
-                }
-              }
-            }
-          }
-        }
-        
-        // Reload repositories
-        loadRepositories();
-        
-        // Clear status after some time
-        setTimeout(() => {
-          setScanStatus(null);
-          setScanId(null);
-        }, 30000);
-      } catch (err) {
-        console.error('Failed to check scan status:', err);
-        clearInterval(interval);
-        setIsPolling(false);
-        setPollingInterval(null);
-        setScanStatus({
-          scan_id: '',
-          status: 'error',
-          run_id: '',
-          repository: '',
-          message: 'Failed to check scan status. Please try again.'
-        });
-      }
-    }, 5000);
-
-    setPollingInterval(interval);
   };
 
   if (status === 'loading') {
@@ -337,8 +183,8 @@ export default function Dashboard() {
                     id="githubUrl"
                     className="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md"
                     placeholder="https://github.com/owner/repository"
-                    value={githubUrl}
-                    onChange={(e) => setGithubUrl(e.target.value)}
+                    value={repoUrl}
+                    onChange={(e) => setRepoUrl(e.target.value)}
                     required
                   />
                 </div>
@@ -365,49 +211,44 @@ export default function Dashboard() {
             </form>
             
             {scanStatus && (
-              <div 
-                className={`mt-4 p-4 rounded-md ${
-                  scanStatus.status === 'completed' ? 'bg-green-50 text-green-700' :
-                  scanStatus.status === 'error' ? 'bg-red-50 text-red-700' :
-                  'bg-blue-50 text-blue-700'
-                }`}
-              >
-                <div className="flex items-center">
+              <div className={`mt-4 p-4 rounded-md ${
+                scanStatus.status === 'error' ? 'bg-red-50 border border-red-200' :
+                scanStatus.status === 'completed' ? 'bg-green-50 border border-green-200' :
+                'bg-blue-50 border border-blue-200'
+              }`}>
+                <div className="flex">
                   <div className="flex-shrink-0">
-                    {scanStatus.status === 'completed' && (
-                      <CheckCircleIcon className="h-5 w-5 text-green-400" aria-hidden="true" />
-                    )}
-                    {scanStatus.status === 'error' && (
+                    {scanStatus.status === 'error' ? (
                       <ExclamationCircleIcon className="h-5 w-5 text-red-400" aria-hidden="true" />
-                    )}
-                    {scanStatus.status === 'in_progress' && (
-                      <div className="animate-spin h-5 w-5 text-blue-400">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
-                      </div>
+                    ) : scanStatus.status === 'completed' ? (
+                      <CheckCircleIcon className="h-5 w-5 text-green-400" aria-hidden="true" />
+                    ) : (
+                      <svg className="animate-spin h-5 w-5 text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
                     )}
                   </div>
                   <div className="ml-3">
-                    <p className="text-sm font-medium">
-                      {scanStatus.message}
-                      {scanStatus.status === 'completed' && repoId && (
-                        <Link href={`/repositories/${repoId}`} className="ml-2 text-green-800 underline font-medium">
-                          View details
-                        </Link>
+                    <h3 className={`text-sm font-medium ${
+                      scanStatus.status === 'error' ? 'text-red-800' :
+                      scanStatus.status === 'completed' ? 'text-green-800' :
+                      'text-blue-800'
+                    }`}>
+                      {scanStatus.status === 'error' ? 'Error' :
+                       scanStatus.status === 'completed' ? 'Success' :
+                       'In Progress'}
+                    </h3>
+                    <div className={`mt-2 text-sm ${
+                      scanStatus.status === 'error' ? 'text-red-700' :
+                      scanStatus.status === 'completed' ? 'text-green-700' :
+                      'text-blue-700'
+                    }`}>
+                      <p>{scanStatus.message}</p>
+                      {scanStatus.status === 'in_progress' && (
+                        <p className="mt-1 font-medium">Please refresh the page or check the repositories page to see results once the scan completes.</p>
                       )}
-                      {scanStatus.status === 'completed' && !repoId && (
-                        <span className="ml-2 text-yellow-800">
-                          Repository details will be available soon
-                        </span>
-                      )}
-                    </p>
-                    {repoDetails && (
-                      <p className="text-xs mt-1">
-                        Repository: {repoDetails.owner}/{repoDetails.name}
-                      </p>
-                    )}
+                    </div>
                   </div>
                 </div>
               </div>

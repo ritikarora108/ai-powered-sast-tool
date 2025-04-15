@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import { repositoryApi } from '@/services/api';
@@ -15,8 +15,16 @@ export default function RepositoryDetailPage({ params }: { params: { id: string 
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>('all');
-  const [isPolling, setIsPolling] = useState(false);
-  const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
+  const [mounted, setMounted] = useState(false);
+  
+  // Direct access to params.id is supported in current Next.js version
+  // TODO: Update to use React.use() when required in future Next.js versions
+  const id = params.id;
+  
+  // Add a mounted state to prevent hydration mismatches
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   useEffect(() => {
     if (status === 'unauthenticated') {
@@ -25,118 +33,123 @@ export default function RepositoryDetailPage({ params }: { params: { id: string 
   }, [status, router]);
 
   useEffect(() => {
-    // Redirect to repositories page if ID is undefined
-    if (params.id === 'undefined') {
+    // Only execute this effect when the component is mounted client-side
+    if (!mounted) return;
+    
+    // Redirect to repositories page if ID is undefined or invalid
+    if (!id || id === 'undefined') {
+      console.log('Repository ID is invalid, redirecting to repositories page');
       router.push('/repositories');
       return;
     }
     
-    if (status === 'authenticated' && params.id) {
-      loadRepositoryData();
+    if (status === 'authenticated') {
+      console.log(`Loading repository with ID: ${id}`);
+      loadRepositoryData(id);
     }
-  }, [status, params.id, router]);
+  }, [status, id, router, mounted]);
 
-  // Clean up any existing polling interval when component unmounts
-  useEffect(() => {
-    return () => {
-      if (pollingInterval) {
-        clearInterval(pollingInterval);
-      }
-    };
-  }, [pollingInterval]);
-
-  const loadRepositoryData = async () => {
+  const loadRepositoryData = async (repoId: string) => {
     setIsLoading(true);
     setError(null);
 
     try {
+      console.log(`Loading repository data for ID: ${repoId}`);
       // Get repository details
-      const repoResponse = await repositoryApi.getRepository(params.id);
+      const repoResponse = await repositoryApi.getRepository(repoId);
+      
       if (repoResponse.data) {
+        console.log("Repository data loaded:", repoResponse.data);
         setRepository(repoResponse.data);
-        
-        // If repository status is in_progress, start polling
-        if (repoResponse.data.status === 'in_progress') {
-          startPolling();
-        }
       } else if (repoResponse.error) {
+        console.error("Error loading repository:", repoResponse.error);
         setError(repoResponse.error);
       }
 
       // Get vulnerabilities
-      const vulnResponse = await repositoryApi.getVulnerabilities(params.id);
+      const vulnResponse = await repositoryApi.getVulnerabilities(repoId);
       if (vulnResponse.data) {
-        setScanResults(vulnResponse.data);
+        console.log("Vulnerabilities loaded:", vulnResponse.data);
+        
+        // Transform vulnerabilities data into required format if needed
+        if (Array.isArray(vulnResponse.data) && !vulnResponse.data.categories) {
+          // Group vulnerabilities by type (OWASP category)
+          const groupedByType = vulnResponse.data.reduce((acc, vuln) => {
+            const type = vuln.Type || 'Uncategorized';
+            if (!acc[type]) {
+              acc[type] = {
+                name: type,
+                description: `${type} vulnerabilities`,
+                vulnerabilities: []
+              };
+            }
+            acc[type].vulnerabilities.push({
+              id: vuln.ID,
+              description: vuln.Description,
+              file_path: vuln.FilePath,
+              line_number: vuln.LineStart,
+              severity: vuln.Severity?.toLowerCase() || 'medium',
+              recommendation: vuln.Remediation
+            });
+            return acc;
+          }, {});
+          
+          // Convert to array structure expected by the UI
+          const formattedData = {
+            vulnerabilities_count: vulnResponse.data.length,
+            categories: Object.values(groupedByType),
+            scan_id: `scan-${repoId}`,
+            repository_id: repoId,
+            repository_name: repository?.name || 'unknown',
+            repository_url: repository?.url || 'unknown',
+            status: 'completed',
+            created_at: new Date().toISOString(),
+            scan_started_at: repository?.last_scan_at || new Date().toISOString(),
+            scan_completed_at: new Date().toISOString(),
+            severity_counts: {
+              high: vulnResponse.data.filter(v => v.Severity?.toLowerCase() === 'high').length || 0,
+              medium: vulnResponse.data.filter(v => v.Severity?.toLowerCase() === 'medium').length || 0,
+              low: vulnResponse.data.filter(v => v.Severity?.toLowerCase() === 'low').length || 0
+            }
+          } as ScanResult;
+          
+          setScanResults(formattedData);
+        } else {
+          setScanResults(vulnResponse.data);
+        }
       } else if (vulnResponse.error && !repoResponse.error) {
+        console.error("Error loading vulnerabilities:", vulnResponse.error);
         setError(vulnResponse.error);
       }
     } catch (err) {
+      console.error("Failed to load repository data:", err);
       setError('Failed to load repository data');
-      console.error(err);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const startPolling = () => {
-    // Don't start polling if already polling
-    if (isPolling) return;
-    
-    console.log(`Starting polling for repository ${params.id}`);
-    setIsPolling(true);
-    
-    // Poll status every 5 seconds
-    const interval = setInterval(async () => {
-      try {
-        console.log(`Checking scan status for repository ${params.id}...`);
-        
-        // Get latest repository status
-        const repoResponse = await repositoryApi.getRepository(params.id);
-        
-        if (repoResponse.data) {
-          setRepository(repoResponse.data);
-          
-          // If status has changed from in_progress to something else
-          if (repoResponse.data.status !== 'in_progress') {
-            console.log(`Scan completed with status: ${repoResponse.data.status}. Stopping polling.`);
-            
-            // Stop polling
-            if (pollingInterval) {
-              clearInterval(pollingInterval);
-              setPollingInterval(null);
-            }
-            setIsPolling(false);
-            
-            // Refresh vulnerabilities data
-            const vulnResponse = await repositoryApi.getVulnerabilities(params.id);
-            if (vulnResponse.data) {
-              setScanResults(vulnResponse.data);
-            }
-          }
-        }
-      } catch (err) {
-        console.error('Error while polling repository status:', err);
-        
-        // In case of error, stop polling
-        clearInterval(pollingInterval!);
-        setPollingInterval(null);
-        setIsPolling(false);
-      }
-    }, 5000);
-    
-    setPollingInterval(interval);
-  };
-
   // Calculate total vulnerabilities
-  const totalVulnerabilities = (scanResults?.vulnerabilities_count || scanResults?.categories?.reduce(
-    (total, category) => total + category.vulnerabilities.length,
-    0
-  ) || 0);
+  const totalVulnerabilities = (scanResults?.vulnerabilities_count || 
+    (scanResults?.categories?.reduce(
+      (total, category) => total + category.vulnerabilities.length,
+      0
+    ) || 0));
 
   // Get categories from backend API response instead of hardcoding them
   const filteredCategories = activeTab === 'all' 
     ? scanResults?.categories || [] 
     : scanResults?.categories?.filter(category => category.name === activeTab) || [];
+
+  // Format date safely to avoid hydration issues
+  const formatDate = (dateString: string | undefined | null) => {
+    if (!mounted || !dateString) return 'Never';
+    try {
+      return new Date(dateString).toLocaleString();
+    } catch (e) {
+      return 'Invalid date';
+    }
+  };
 
   if (status === 'loading' || isLoading) {
     return (
@@ -155,19 +168,30 @@ export default function RepositoryDetailPage({ params }: { params: { id: string 
           {repository ? (
             <div>
               <div className="flex items-center justify-between">
-                <h1 className="text-2xl font-semibold text-gray-900">
+                <h1 className="text-2xl font-bold text-gray-900">
                   {repository.owner}/{repository.name}
                 </h1>
                 <div className="flex space-x-3">
-                  {isPolling && (
-                    <div className="inline-flex items-center px-3 py-1.5 border border-transparent text-sm font-medium rounded-md text-yellow-800 bg-yellow-100">
-                      <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-yellow-800" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                      </svg>
-                      Scan in progress...
-                    </div>
-                  )}
+                  <button
+                    onClick={() => {
+                      console.log(`Refreshing repository with ID: ${id}`);
+                      if (id) loadRepositoryData(id);
+                    }}
+                    className="inline-flex items-center px-3 py-1.5 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                    disabled={isLoading}
+                  >
+                    {isLoading ? (
+                      <>
+                        <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        Refreshing...
+                      </>
+                    ) : (
+                      'Refresh Results'
+                    )}
+                  </button>
                   <a
                     href={repository.url}
                     target="_blank"
@@ -181,7 +205,7 @@ export default function RepositoryDetailPage({ params }: { params: { id: string 
               
               <div className="mt-2 flex items-center">
                 <p className="text-sm text-gray-500 mr-4">
-                  Last scan: {repository.last_scan_at ? new Date(repository.last_scan_at).toLocaleString() : 'Never'}
+                  Last scan: {formatDate(repository.last_scan_at)}
                 </p>
                 <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
                   repository.status === 'completed' ? 'bg-green-100 text-green-800' : 
@@ -206,7 +230,7 @@ export default function RepositoryDetailPage({ params }: { params: { id: string 
                         Scan Results
                       </h2>
                       <p className="mt-1 max-w-2xl text-sm text-gray-500">
-                        {totalVulnerabilities} vulnerabilities found across {scanResults.categories.length} OWASP categories
+                        {totalVulnerabilities} vulnerabilities found across {scanResults?.categories?.length || 0} OWASP categories
                       </p>
                     </div>
                     
@@ -224,7 +248,7 @@ export default function RepositoryDetailPage({ params }: { params: { id: string 
                           All ({totalVulnerabilities})
                         </button>
                         
-                        {scanResults.categories.map((category) => (
+                        {scanResults?.categories?.map((category) => (
                           <button
                             key={category.name}
                             onClick={() => setActiveTab(category.name)}
