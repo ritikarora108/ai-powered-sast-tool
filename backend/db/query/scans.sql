@@ -26,6 +26,13 @@ SET
 WHERE id = $1
 RETURNING *;
 
+-- name: UpdateScanResults :one
+UPDATE scans
+SET 
+  results_available = true
+WHERE id = $1
+RETURNING *;
+
 -- name: GetLatestScanByRepositoryID :one
 SELECT * FROM scans
 WHERE repository_id = $1

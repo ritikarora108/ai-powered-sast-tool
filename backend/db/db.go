@@ -1,8 +1,10 @@
+// Package db provides database access functionality
 package db
 
 import (
 	"database/sql"
 	"log"
+	"sync"
 
 	_ "github.com/lib/pq"
 )
@@ -12,9 +14,24 @@ type Queries struct {
 	db *sql.DB
 }
 
+// Global database connection instance
+var (
+	globalDB *sql.DB
+	dbMutex  sync.Mutex
+)
+
+// SetGlobalDB sets the global database connection
+func SetGlobalDB(db *sql.DB) {
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+	globalDB = db
+}
+
 // NewQueries creates a new Queries instance
 func NewQueries() *Queries {
-	return &Queries{}
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+	return &Queries{db: globalDB}
 }
 
 // SetDB sets the database connection
