@@ -136,16 +136,60 @@ export const repositoryApi = {
   },
 
   // Get user repositories
-  getRepositories: async (): Promise<ApiResponse<Repository[]>> => {
+  getRepositories: async (retryCount = 0): Promise<ApiResponse<Repository[]>> => {
     try {
+      console.log(`Fetching repositories from ${API_URL}/repositories`);
       const response = await api.get('/repositories');
+      console.log('Repositories API response:', response);
+      
+      // Validate the response data
+      if (!response.data) {
+        throw new Error('No data received from server');
+      }
+      
+      // Handle case where response might not be an array
+      if (!Array.isArray(response.data)) {
+        console.warn('Response is not an array:', response.data);
+        // If data.repositories exists and is an array, use it
+        if (response.data.repositories && Array.isArray(response.data.repositories)) {
+          console.log('Using repositories field from response');
+          return {
+            data: normalizeRepositoryData(response.data.repositories),
+            status: response.status,
+          };
+        } else {
+          throw new Error('Invalid response format: expected array of repositories');
+        }
+      }
+      
+      // Normalize the repository data (convert property names from backend to frontend format)
+      const normalizedData = normalizeRepositoryData(response.data);
+      
       return {
-        data: response.data,
+        data: normalizedData,
         status: response.status,
       };
     } catch (error: any) {
+      console.error('Error fetching repositories:', error);
+      if (error.response) {
+        console.error('Error response status:', error.response.status);
+        console.error('Error response data:', error.response.data);
+      } else if (error.request) {
+        console.error('No response received:', error.request);
+      } else {
+        console.error('Error message:', error.message);
+      }
+      
+      // Implement retry logic (max 3 attempts)
+      if (retryCount < 3) {
+        console.log(`Retrying repository fetch (attempt ${retryCount + 1}/3)`);
+        // Wait for a short time before retrying
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        return repositoryApi.getRepositories(retryCount + 1);
+      }
+      
       return {
-        error: error.response?.data?.message || 'An error occurred',
+        error: error.response?.data?.message || error.message || 'An error occurred',
         status: error.response?.status || 500,
       };
     }
@@ -155,6 +199,16 @@ export const repositoryApi = {
   getRepository: async (id: string): Promise<ApiResponse<Repository>> => {
     try {
       const response = await api.get(`/repositories/${id}`);
+      
+      // Normalize the repository data from backend format to frontend format
+      if (response.data) {
+        const normalizedRepo = normalizeRepositoryData([response.data])[0];
+        return {
+          data: normalizedRepo,
+          status: response.status,
+        };
+      }
+      
       return {
         data: response.data,
         status: response.status,
@@ -182,4 +236,19 @@ export const repositoryApi = {
       };
     }
   },
-}; 
+};
+
+// Helper function to normalize repository data from backend format to frontend format
+function normalizeRepositoryData(repositories: any[]): Repository[] {
+  return repositories.map(repo => ({
+    id: repo.ID || repo.id,
+    name: repo.Name || repo.name,
+    owner: repo.Owner || repo.owner,
+    url: repo.URL || repo.url,
+    clone_url: repo.CloneURL || repo.clone_url,
+    created_at: repo.CreatedAt || repo.created_at,
+    updated_at: repo.UpdatedAt || repo.updated_at,
+    last_scan_at: repo.LastScanAt || repo.last_scan_at,
+    status: repo.Status || repo.status
+  }));
+} 
