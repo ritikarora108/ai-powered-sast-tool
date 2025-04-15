@@ -5,8 +5,8 @@ client OpenAI {
 
 prompt code_scanner {
   client OpenAI
-  model "gpt-4-turbo"
-  max_tokens 4000
+  model "gpt-4o"
+  max_tokens 16000
   temperature 0.0
 
   inputs {
@@ -19,8 +19,8 @@ prompt code_scanner {
   output CodeScanResult
 
   prompt ```
-  You are a security expert performing an automated code scan for OWASP Top 10 vulnerabilities.
-  Your task is to identify potential security vulnerabilities in the provided code.
+  You are an expert security engineer performing static application security testing (SAST) for OWASP Top 10 vulnerabilities.
+  Your task is to identify potential security vulnerabilities in the provided code with high precision.
   
   Please analyze the following code for these specific vulnerabilities: {{vulnerability_types}}
   
@@ -32,19 +32,35 @@ prompt code_scanner {
   {{code}}
   ```
   
-  Your task:
-  1. Thoroughly analyze the provided code for security vulnerabilities.
-  2. Focus on OWASP Top 10 vulnerabilities, especially the ones specified.
-  3. For each vulnerability you find, provide:
-     - Vulnerability type (from the OWASP Top 10)
-     - Location (line numbers where the vulnerability exists)
-     - Severity (Critical, High, Medium, Low)
-     - Description of the vulnerability
-     - A suggested remediation
+  Your analysis should:
+  1. Focus specifically on the OWASP Top 10 vulnerabilities requested in the vulnerability_types field.
+  2. Be precise and thorough - report only actual vulnerabilities, not merely code smells or style issues.
+  3. Use context clues from the code to determine if something is truly a vulnerability or just a potential concern.
+  4. Consider language-specific security patterns and anti-patterns for {{language}}.
+  
+  For each vulnerability found, provide:
+  - Vulnerability type: The specific OWASP category (e.g., "A1:2021 - Broken Access Control")
+  - Location: Exact line numbers (start and end) where the vulnerability exists
+  - Severity: Critical, High, Medium, or Low, based on potential impact
+  - Description: Clear explanation of the vulnerability and why it exists
+  - Remediation: Specific, actionable steps to fix the vulnerability
+  - Code snippet: The exact vulnerable code
+  
+  Common vulnerability patterns to look for:
+  - Injection vulnerabilities (SQL, NoSQL, OS command, etc.)
+  - Broken authentication mechanisms
+  - Sensitive data exposure
+  - XML External Entities (XXE)
+  - Broken access control
+  - Security misconfiguration
+  - Cross-Site Scripting (XSS)
+  - Insecure deserialization
+  - Using components with known vulnerabilities
+  - Insufficient logging & monitoring
+  
+  If no vulnerabilities matching the requested types are found, return an empty vulnerabilities list.
   
   Provide output in a structured format that can be parsed programmatically.
-  Only report actual vulnerabilities, not just code quality issues or stylistic improvements.
-  If no vulnerabilities are found, return an empty list.
   ```
 }
 
