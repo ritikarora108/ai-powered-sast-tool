@@ -2,6 +2,7 @@ package temporal
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"time"
@@ -47,7 +48,11 @@ func CloneRepositoryActivity(ctx context.Context, input CloneActivityInput) (*Cl
 	log := logger.Get()
 	log.Info("Starting clone repository activity", zap.String("repo_id", input.RepositoryID))
 
-	gitHubService := services.NewGitHubService(db.NewQueries())
+	// Check if database is available
+	dbQueries := db.NewQueries()
+	gitHubService := services.NewGitHubService(dbQueries)
+
+	// Continue with cloning even if database is unavailable
 	repo := &services.Repository{
 		ID:       input.RepositoryID,
 		CloneURL: input.CloneURL,
@@ -116,21 +121,45 @@ func ScanRepositoryActivity(ctx context.Context, input ScanActivityInput) (*Scan
 
 	// Try to create a scan record in the database
 	sqlDB := dbQueries.GetDB()
+
+	// If database connection is available, try to create a scan record
+	var databaseAvailable bool = false
 	if sqlDB != nil {
+		databaseAvailable = true
+
+		// First, let's get the repository's created_by field if possible
+		var createdBy sql.NullString
+		err := sqlDB.QueryRowContext(ctx,
+			`SELECT created_by FROM repositories WHERE id = $1`,
+			input.RepositoryID).Scan(&createdBy)
+
+		if err != nil && err != sql.ErrNoRows {
+			log.Warn("Failed to get repository creator information",
+				zap.String("repo_id", input.RepositoryID),
+				zap.Error(err))
+			// Continue anyway, the created_by will remain NULL
+		}
+
 		// Create a scan record
-		_, err := sqlDB.ExecContext(ctx,
-			`INSERT INTO scans (id, repository_id, status) VALUES ($1, $2, $3)`,
-			scanID, input.RepositoryID, "in_progress")
+		_, err = sqlDB.ExecContext(ctx,
+			`INSERT INTO scans (id, repository_id, status, started_at, created_by, error_message) 
+			VALUES ($1, $2, $3, NOW(), $4, $5)`,
+			scanID, input.RepositoryID, "in_progress", createdBy, "")
 		if err != nil {
-			log.Warn("Failed to create scan record in database",
+			log.Error("Failed to create scan record in database",
 				zap.String("scan_id", scanID),
 				zap.String("repo_id", input.RepositoryID),
 				zap.Error(err))
+			// Continue with the scan but note that we won't be able to store results
+			databaseAvailable = false
 		} else {
 			log.Info("Created scan record in database",
 				zap.String("scan_id", scanID),
 				zap.String("repo_id", input.RepositoryID))
 		}
+	} else {
+		log.Warn("Database connection is not available, proceeding without saving to database",
+			zap.String("repo_id", input.RepositoryID))
 	}
 
 	// Convert string vulnerability types to the enum type
@@ -158,11 +187,16 @@ func ScanRepositoryActivity(ctx context.Context, input ScanActivityInput) (*Scan
 			zap.String("repo_id", input.RepositoryID),
 			zap.Error(err))
 
-		// Update scan status to failed
-		if sqlDB != nil {
+		// Update scan status to failed if database is available
+		if databaseAvailable && sqlDB != nil {
+			errMsg := err.Error()
+			if errMsg == "" {
+				errMsg = "Unknown scan error occurred"
+			}
+
 			_, updateErr := sqlDB.ExecContext(ctx,
 				`UPDATE scans SET status = $1, error_message = $2, completed_at = NOW() WHERE id = $3`,
-				"failed", err.Error(), scanID)
+				"failed", errMsg, scanID)
 			if updateErr != nil {
 				log.Error("Failed to update scan status",
 					zap.String("scan_id", scanID),
@@ -173,47 +207,123 @@ func ScanRepositoryActivity(ctx context.Context, input ScanActivityInput) (*Scan
 		return nil, fmt.Errorf("failed to scan repository: %w", err)
 	}
 
-	// Store the vulnerabilities in the database
+	// Store the vulnerabilities in the database if available
 	var vulnList []services.Vulnerability
-	for _, v := range scanResult.Vulnerabilities {
-		vulnList = append(vulnList, services.Vulnerability{
-			ID:          v.ID,
-			Type:        v.Type,
-			FilePath:    v.FilePath,
-			LineStart:   v.LineStart,
-			LineEnd:     v.LineEnd,
-			Severity:    v.Severity,
-			Description: v.Description,
-			Remediation: v.Remediation,
-			Code:        v.Code,
-		})
+	var dbErrors []error
 
-		// Store each vulnerability in the database
-		if sqlDB != nil {
-			_, err = sqlDB.ExecContext(ctx,
-				`INSERT INTO vulnerabilities 
-				(id, scan_id, vulnerability_type, file_path, line_start, line_end, severity, description, remediation, code_snippet) 
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-				v.ID, scanID, string(v.Type), v.FilePath, v.LineStart, v.LineEnd,
-				v.Severity, v.Description, v.Remediation, v.Code)
-			if err != nil {
-				log.Warn("Failed to store vulnerability",
-					zap.String("scan_id", scanID),
-					zap.String("vuln_id", v.ID),
-					zap.Error(err))
+	if databaseAvailable && sqlDB != nil && scanResult != nil && len(scanResult.Vulnerabilities) > 0 {
+		log.Info("Storing vulnerability findings in database",
+			zap.String("scan_id", scanID),
+			zap.Int("vuln_count", len(scanResult.Vulnerabilities)))
+
+		// Prepare a transaction for bulk inserts
+		tx, err := sqlDB.BeginTx(ctx, nil)
+		if err != nil {
+			log.Error("Failed to begin transaction for storing vulnerabilities",
+				zap.String("scan_id", scanID),
+				zap.Error(err))
+		} else {
+			// Insert vulnerabilities within the transaction
+			for _, vuln := range scanResult.Vulnerabilities {
+				vulnID := uuid.New().String()
+				_, err := tx.ExecContext(ctx,
+					`INSERT INTO vulnerabilities (
+						id, scan_id, vulnerability_type, file_path, 
+						line_start, line_end, severity, description, 
+						remediation, code_snippet, created_at, updated_at
+					) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())`,
+					vulnID, scanID, string(vuln.Type), vuln.FilePath,
+					vuln.LineStart, vuln.LineEnd, vuln.Severity, vuln.Description,
+					vuln.Remediation, vuln.Code)
+
+				if err != nil {
+					dbErrors = append(dbErrors, err)
+					log.Error("Failed to insert vulnerability",
+						zap.String("scan_id", scanID),
+						zap.String("vuln_type", string(vuln.Type)),
+						zap.Error(err))
+					continue
+				}
+
+				// Add to the list of vulnerabilities to return
+				vulnWithID := services.Vulnerability{
+					ID:          vulnID,
+					Type:        vuln.Type,
+					FilePath:    vuln.FilePath,
+					LineStart:   vuln.LineStart,
+					LineEnd:     vuln.LineEnd,
+					Severity:    vuln.Severity,
+					Description: vuln.Description,
+					Remediation: vuln.Remediation,
+					Code:        vuln.Code,
+				}
+				vulnList = append(vulnList, vulnWithID)
 			}
+
+			// Commit the transaction
+			if err := tx.Commit(); err != nil {
+				log.Error("Failed to commit transaction for storing vulnerabilities",
+					zap.String("scan_id", scanID),
+					zap.Error(err))
+			} else {
+				log.Info("Successfully stored vulnerabilities in database",
+					zap.String("scan_id", scanID),
+					zap.Int("vuln_count", len(vulnList)))
+			}
+		}
+	} else if scanResult != nil {
+		// Database unavailable, but we still have scan results, so include them in the output
+		log.Info("Database unavailable for storing vulnerabilities, returning only in memory",
+			zap.String("scan_id", scanID),
+			zap.Int("vuln_count", len(scanResult.Vulnerabilities)))
+
+		// Still include the vulnerabilities in the output
+		for _, vuln := range scanResult.Vulnerabilities {
+			vulnWithID := services.Vulnerability{
+				ID:          uuid.New().String(), // Generate IDs even if not in DB
+				Type:        vuln.Type,
+				FilePath:    vuln.FilePath,
+				LineStart:   vuln.LineStart,
+				LineEnd:     vuln.LineEnd,
+				Severity:    vuln.Severity,
+				Description: vuln.Description,
+				Remediation: vuln.Remediation,
+				Code:        vuln.Code,
+			}
+			vulnList = append(vulnList, vulnWithID)
 		}
 	}
 
 	// Update scan status to completed
-	if sqlDB != nil {
+	if databaseAvailable && sqlDB != nil {
 		_, err = sqlDB.ExecContext(ctx,
-			`UPDATE scans SET status = $1, completed_at = NOW() WHERE id = $2`,
+			`UPDATE scans SET status = $1, completed_at = NOW(), results_available = true WHERE id = $2`,
 			"completed", scanID)
 		if err != nil {
 			log.Error("Failed to update scan status",
 				zap.String("scan_id", scanID),
 				zap.Error(err))
+			return nil, fmt.Errorf("failed to update scan status: %w", err)
+		}
+
+		log.Info("Updated scan status to completed and set results_available flag",
+			zap.String("scan_id", scanID))
+	}
+
+	// Update repository with last scan time and status
+	if databaseAvailable && sqlDB != nil {
+		_, err = sqlDB.ExecContext(ctx,
+			`UPDATE repositories SET last_scan_at = NOW(), status = $1 WHERE id = $2`,
+			"completed", input.RepositoryID)
+		if err != nil {
+			log.Error("Failed to update repository scan info",
+				zap.String("repo_id", input.RepositoryID),
+				zap.Error(err))
+			// Continue anyway since the scan itself is completed
+		} else {
+			log.Info("Updated repository with scan info",
+				zap.String("repo_id", input.RepositoryID),
+				zap.String("status", "completed"))
 		}
 	}
 

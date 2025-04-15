@@ -40,7 +40,7 @@ func ScanWorkflow(ctx workflow.Context, input ScanWorkflowInput) (*ScanWorkflowO
 	// Step 1: Clone repository
 	var cloneOutput CloneActivityOutput
 	cloneCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: 10 * time.Minute,
+		StartToCloseTimeout: 60 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
 			MaximumAttempts: 3,
 		},

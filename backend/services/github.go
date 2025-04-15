@@ -13,20 +13,22 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5"
+	"github.com/google/uuid"
 	"github.com/ritikarora108/ai-powered-sast-tool/backend/db"
 )
 
 // Repository represents a GitHub repository
 type Repository struct {
-	ID         string
-	Name       string
-	Owner      string
-	URL        string
-	CloneURL   string
-	CreatedAt  string
-	UpdatedAt  string
-	LastScanAt *string
-	Status     string
+	ID          string
+	Name        string
+	Owner       string
+	URL         string
+	CloneURL    string
+	Description string
+	CreatedAt   string
+	UpdatedAt   string
+	LastScanAt  *string
+	Status      string
 }
 
 // GitHubService defines the interface for GitHub operations
@@ -88,9 +90,10 @@ func (s *gitHubService) FetchRepositoryInfo(ctx context.Context, owner, repo str
 	}
 
 	var repoInfo struct {
-		ID    int    `json:"id"`
-		Name  string `json:"name"`
-		Owner struct {
+		ID          int    `json:"id"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Owner       struct {
 			Login string `json:"login"`
 		} `json:"owner"`
 		HTMLURL  string `json:"html_url"`
@@ -101,12 +104,18 @@ func (s *gitHubService) FetchRepositoryInfo(ctx context.Context, owner, repo str
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
+	// Generate a UUID v5 from the repository ID
+	// This creates a consistent UUID based on the GitHub repo ID
+	repoIDStr := fmt.Sprintf("github-repo-%d", repoInfo.ID)
+	repoUUID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(repoIDStr))
+
 	return &Repository{
-		ID:       fmt.Sprintf("%d", repoInfo.ID),
-		Name:     repoInfo.Name,
-		Owner:    repoInfo.Owner.Login,
-		URL:      repoInfo.HTMLURL,
-		CloneURL: repoInfo.CloneURL,
+		ID:          repoUUID.String(),
+		Name:        repoInfo.Name,
+		Owner:       repoInfo.Owner.Login,
+		URL:         repoInfo.HTMLURL,
+		CloneURL:    repoInfo.CloneURL,
+		Description: repoInfo.Description,
 	}, nil
 }
 
@@ -256,10 +265,10 @@ func (s *gitHubService) AddUserRepository(ctx context.Context, userID string, re
 	if err == sql.ErrNoRows {
 		// Repository doesn't exist, create it
 		_, err = db.ExecContext(ctx,
-			`INSERT INTO repositories (id, owner, name, url, clone_url, created_at, updated_at, status) 
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			repoInfo.ID, owner, name, repoInfo.URL, repoInfo.CloneURL,
-			time.Now().Format(time.RFC3339), time.Now().Format(time.RFC3339), "pending")
+			`INSERT INTO repositories (id, owner, name, url, clone_url, description, created_at, updated_at, status, created_by) 
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+			repoInfo.ID, owner, name, repoInfo.URL, repoInfo.CloneURL, repoInfo.Description,
+			time.Now().Format(time.RFC3339), time.Now().Format(time.RFC3339), "pending", userID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to store repository information: %w", err)
 		}

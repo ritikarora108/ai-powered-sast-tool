@@ -57,24 +57,7 @@ func main() {
 
 	logger.Info("Starting AI-powered SAST tool backend")
 
-	// Initialize Temporal client
-	logger.Info("Initializing Temporal client")
-	temporalClient, err := client.NewLazyClient(client.Options{
-		HostPort: os.Getenv("TEMPORAL_HOST"),
-	})
-	if err != nil {
-		logger.Fatal("Unable to create Temporal client", zap.Error(err))
-	}
-	defer temporalClient.Close()
-
-	// Start Temporal worker for scan workflows
-	logger.Info("Starting Temporal worker for scan workflows")
-	err = startScanWorker(temporalClient)
-	if err != nil {
-		logger.Fatal("Unable to start Temporal worker", zap.Error(err))
-	}
-
-	// Connect to PostgreSQL database
+	// Connect to PostgreSQL database first
 	dbHost := os.Getenv("DB_HOST")
 	dbPort := os.Getenv("DB_PORT")
 	dbUser := os.Getenv("DB_USER")
@@ -97,20 +80,47 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Test connection
-	// err = sqlDB.Ping()
-	// if err != nil {
-	// 	logger.Fatal("Failed to ping database", zap.Error(err))
-	// 	os.Exit(1)
-	// }
+	// Configure connection pool settings
+	sqlDB.SetMaxOpenConns(25)
+	sqlDB.SetMaxIdleConns(5)
+	sqlDB.SetConnMaxLifetime(time.Minute * 5)
 
-	logger.Info("Successfully connected to PostgreSQL database")
+	// Test connection with a timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err = sqlDB.PingContext(ctx)
+	if err != nil {
+		logger.Error("Failed to ping database", zap.Error(err))
+		logger.Warn("Continuing without database connection - some features may not work")
+	} else {
+		logger.Info("Successfully connected to PostgreSQL database")
+	}
+
+	// Set global DB connection for all new queries
+	db.SetGlobalDB(sqlDB)
 	defer sqlDB.Close()
 
 	// Initialize database queries
 	dbQueries := db.NewQueries()
-	dbQueries.SetDB(sqlDB)
 	defer dbQueries.Close()
+
+	// Initialize Temporal client after database is set up
+	logger.Info("Initializing Temporal client")
+	temporalClient, err := client.NewLazyClient(client.Options{
+		HostPort: os.Getenv("TEMPORAL_HOST"),
+	})
+	if err != nil {
+		logger.Fatal("Unable to create Temporal client", zap.Error(err))
+	}
+	defer temporalClient.Close()
+
+	// Start Temporal worker for scan workflows
+	logger.Info("Starting Temporal worker for scan workflows")
+	err = startScanWorker(temporalClient)
+	if err != nil {
+		logger.Fatal("Unable to start Temporal worker", zap.Error(err))
+	}
 
 	// Create router with the temporal client and database
 	logger.Info("Initializing API router")
