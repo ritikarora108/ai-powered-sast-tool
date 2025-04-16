@@ -1,0 +1,9 @@
+node_modules
+.next
+.eslintrc.json
+next-env.d.ts
+next-auth.d.ts
+src/types/next-auth.d.ts
+src/services/api.ts
+src/app/api/auth/**/*
+src/app/repositories/**/*
