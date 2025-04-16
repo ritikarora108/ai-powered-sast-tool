@@ -12,7 +12,8 @@ RUN apk --no-cache add ca-certificates
 
 WORKDIR /root/
 COPY --from=builder /app/main .
-COPY --from=builder /app/.env .
+# Remove copying .env file - environment variables should be set in docker-compose or through container orchestration
+# COPY --from=builder /app/.env .
 
 EXPOSE 8080
 CMD ["./main"]
