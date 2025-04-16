@@ -1,6 +1,94 @@
-# AI-Powered SAST Tool
+# AI-Powered Static Application Security Testing Tool
 
-A lightweight Static Application Security Testing (SAST) tool that uses AI to detect OWASP Top 10 vulnerabilities in codebases from public GitHub repositories.
+This repository contains an AI-powered Static Application Security Testing (SAST) tool that helps identify security vulnerabilities in your code.
+
+## Project Structure
+
+The project is organized as follows:
+
+```
+ai-powered-sast-tool/
+├── frontend/             # Frontend application built with Next.js
+│   ├── src/
+│   │   ├── app/          # Next.js app router pages and layouts
+│   │   ├── components/   # Reusable UI components
+│   │   │   ├── ui/       # Basic UI components (Button, Card, Input)
+│   │   │   ├── layout/   # Layout components
+│   │   │   ├── auth/     # Authentication components
+│   │   │   ├── features/ # Feature-specific components
+│   │   │   └── utility/  # Utility components like ErrorBoundary
+│   │   ├── context/      # React context providers
+│   │   ├── hooks/        # Custom React hooks
+│   │   ├── services/     # API services
+│   │   ├── utils/        # Utility functions
+│   │   ├── constants/    # Constants and configuration values
+│   │   └── types/        # TypeScript type definitions
+│   ├── public/           # Static assets
+│   └── ...
+└── ...
+```
+
+## Getting Started
+
+### Prerequisites
+
+- Node.js 20.x or later
+- npm 10.x or later
+
+### Installation
+
+1. Clone the repository:
+
+   ```
+   git clone https://github.com/yourusername/ai-powered-sast-tool.git
+   cd ai-powered-sast-tool
+   ```
+
+2. Install dependencies:
+
+   ```
+   npm install
+   ```
+
+3. Set up environment variables:
+
+   ```
+   cp frontend/.env.example frontend/.env.local
+   ```
+
+   Edit the `.env.local` file with your configuration.
+
+### Development
+
+To start the development server:
+
+```
+npm run dev
+```
+
+The application will be available at `http://localhost:3000`.
+
+### Building for Production
+
+To build the application for production:
+
+```
+npm run build
+```
+
+To start the production server:
+
+```
+npm run start
+```
+
+## License
+
+[License details here]
+
+## Acknowledgements
+
+[Any acknowledgements here]
 
 ## Key Features
 
@@ -168,3 +256,46 @@ ai-powered-sast-tool/
 ## License
 
 Copyright © 2025 Ritik Arora. All rights reserved.
+
+## Code Style and Formatting
+
+This project follows a consistent code style with the following indentation rules:
+
+- 1 tab = 4 spaces for most files
+- Go files use tabs (equivalent to 4 spaces)
+- JSON, YAML, and Markdown files use 2 spaces
+
+### Formatting Tools
+
+The project includes tools to automatically format code according to these standards:
+
+#### PowerShell (Windows)
+
+```powershell
+.\scripts\Format-Code.ps1
+```
+
+#### Bash (Linux/macOS)
+
+```bash
+./scripts/format_code.sh
+```
+
+These scripts will format both frontend and backend code using the appropriate tools:
+
+- Go files: `go fmt`
+- TypeScript/JavaScript/JSON: Prettier
+
+### Editor Configuration
+
+The project includes:
+
+- `.editorconfig` for editor-agnostic settings
+- `.prettierrc` for frontend code formatting
+- `.vscode/settings.json` for Visual Studio Code users
+
+For VS Code users, we recommend installing the following extensions:
+
+- EditorConfig for VS Code
+- Prettier - Code formatter
+- Go
