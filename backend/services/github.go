@@ -15,6 +15,8 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/google/uuid"
 	"github.com/ritikarora108/ai-powered-sast-tool/backend/db"
+	"github.com/ritikarora108/ai-powered-sast-tool/backend/internal/logger"
+	"go.uber.org/zap"
 )
 
 // Repository represents a GitHub repository
@@ -43,7 +45,7 @@ type GitHubService interface {
 	ListFiles(ctx context.Context, repoDir string, extensions []string) ([]string, error)
 
 	CreateRepository(owner, name, url string) (string, error)
-	ListRepositories() ([]*Repository, error)
+	ListRepositories(userID string) ([]*Repository, error)
 	GetRepository(id string) (*Repository, error)
 
 	// GetRepositoryVulnerabilities retrieves vulnerabilities for a repository
@@ -120,21 +122,107 @@ func (s *gitHubService) FetchRepositoryInfo(ctx context.Context, owner, repo str
 }
 
 func (s *gitHubService) CloneRepository(ctx context.Context, repo *Repository, targetDir string) error {
-	// Implement Git clone using go-git
-	r, err := git.PlainCloneContext(ctx, targetDir, false, &git.CloneOptions{
-		URL:      repo.CloneURL,
-		Progress: os.Stdout,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to clone repository: %w", err)
+	log := logger.FromContext(ctx)
+	if log == nil {
+		log = logger.Get()
 	}
 
-	// Verify the repository was cloned successfully
-	_, err = r.Worktree()
-	if err != nil {
-		return fmt.Errorf("failed to get worktree: %w", err)
+	// Create target directory if it doesn't exist
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("failed to create target directory: %w", err)
 	}
-	return nil
+
+	// Check if directory is empty, if not, remove contents
+	files, err := os.ReadDir(targetDir)
+	if err != nil {
+		return fmt.Errorf("failed to read target directory: %w", err)
+	}
+
+	if len(files) > 0 {
+		log.Info("Target directory not empty, cleaning before clone", zap.String("dir", targetDir))
+		// Remove everything except .git directory
+		for _, file := range files {
+			if file.Name() != ".git" {
+				path := filepath.Join(targetDir, file.Name())
+				os.RemoveAll(path)
+			}
+		}
+	}
+
+	// Check for GitHub token for authentication
+	githubToken := os.Getenv("GITHUB_TOKEN")
+
+	// First try without authentication for public repos
+	cloneURL := repo.CloneURL
+	log.Info("Attempting unauthenticated GitHub clone")
+
+	// Attempt the clone with retry logic
+	maxRetries := 3
+	var lastError error
+
+	for i := 0; i < maxRetries; i++ {
+		log.Info("Cloning repository",
+			zap.String("url", repo.CloneURL),
+			zap.String("target", targetDir),
+			zap.Int("attempt", i+1))
+
+		// Remove .git directory if it exists and we're retrying
+		if i > 0 {
+			os.RemoveAll(filepath.Join(targetDir, ".git"))
+		}
+
+		// Try authenticated clone if available and we've had an error
+		if i > 0 && githubToken != "" && strings.HasPrefix(repo.CloneURL, "https://github.com") {
+			// Format the authentication URL correctly
+			// The URL should be https://{token}@github.com/owner/repo.git
+			repoURLParts := strings.Split(strings.TrimPrefix(repo.CloneURL, "https://github.com/"), "/")
+			if len(repoURLParts) == 2 {
+				authURL := fmt.Sprintf("https://%s@github.com/%s", githubToken, repoURLParts[1])
+				log.Info("Trying authenticated GitHub clone after failure")
+				cloneURL = authURL
+			} else {
+				log.Warn("Could not format GitHub URL with token, using original URL")
+			}
+		}
+
+		// Clone with or without authentication
+		r, err := git.PlainCloneContext(ctx, targetDir, false, &git.CloneOptions{
+			URL:      cloneURL,
+			Progress: os.Stdout,
+			Depth:    1, // Shallow clone to save time and space
+		})
+
+		if err == nil {
+			// Verify the repository was cloned successfully
+			_, err = r.Worktree()
+			if err == nil {
+				log.Info("Successfully cloned repository",
+					zap.String("repo", repo.Name),
+					zap.String("owner", repo.Owner))
+				return nil
+			}
+			lastError = fmt.Errorf("failed to get worktree: %w", err)
+		} else {
+			lastError = fmt.Errorf("failed to clone repository: %w", err)
+
+			// If this is an authentication error, try without auth on next attempt
+			if strings.Contains(err.Error(), "authentication") {
+				cloneURL = repo.CloneURL
+				log.Info("Authentication error, falling back to unauthenticated clone")
+			}
+		}
+
+		log.Warn("Clone attempt failed, retrying...",
+			zap.Int("attempt", i+1),
+			zap.Int("max_retries", maxRetries),
+			zap.Error(err))
+
+		if i < maxRetries-1 {
+			time.Sleep(time.Second * 2)
+		}
+	}
+
+	return lastError
 }
 
 func (s *gitHubService) ListFiles(ctx context.Context, repoDir string, extensions []string) ([]string, error) {
@@ -157,7 +245,7 @@ func (s *gitHubService) ListFiles(ctx context.Context, repoDir string, extension
 	return result, nil
 }
 
-func (s *gitHubService) ListRepositories() ([]*Repository, error) {
+func (s *gitHubService) ListRepositories(userID string) ([]*Repository, error) {
 	ctx := context.Background()
 
 	// Get the database connection
@@ -170,23 +258,87 @@ func (s *gitHubService) ListRepositories() ([]*Repository, error) {
 	var tableExists bool
 	err := db.QueryRowContext(ctx, `
 		SELECT EXISTS (
-			SELECT FROM information_schema.tables 
+			SELECT FROM information_schema.tables
 			WHERE table_schema = 'public'
 			AND table_name = 'repositories'
 		)
 	`).Scan(&tableExists)
 
-	if err != nil || !tableExists {
-		// If there's an error or the table doesn't exist, return the error
-		return nil, fmt.Errorf("repositories table does not exist: %w", err)
+	if err != nil {
+		// Return error if we couldn't check if table exists
+		return nil, fmt.Errorf("error checking repositories table: %w", err)
 	}
 
-	// Query repositories from the database
-	rows, err := db.QueryContext(ctx, `
-		SELECT id, name, owner, url, clone_url, created_at, updated_at, last_scan_at, status
-		FROM repositories
-		ORDER BY updated_at DESC
-	`)
+	if !tableExists {
+		// If table doesn't exist, return empty array for new users
+		logger.Get().Info("Repositories table does not exist, returning empty array")
+		return []*Repository{}, nil
+	}
+
+	// Check if user_repositories table exists
+	var joinTableExists bool
+	err = db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT FROM information_schema.tables
+			WHERE table_schema = 'public'
+			AND table_name = 'user_repositories'
+		)
+	`).Scan(&joinTableExists)
+
+	if err != nil {
+		return nil, fmt.Errorf("error checking user_repositories table: %w", err)
+	}
+
+	var rows *sql.Rows
+
+	if joinTableExists {
+		// If user_repositories table exists, use it to filter repositories by user
+		logger.Get().Info("Using user_repositories table to filter repositories", zap.String("user_id", userID))
+		rows, err = db.QueryContext(ctx, `
+			SELECT r.id, r.name, r.owner, r.url, r.clone_url, r.created_at, r.updated_at, r.last_scan_at, r.status
+			FROM repositories r
+			JOIN user_repositories ur ON r.id = ur.repository_id
+			WHERE ur.user_id = $1
+			ORDER BY r.updated_at DESC
+		`, userID)
+	} else {
+		// If user_repositories table doesn't exist, fall back to using created_by field or returning all repositories
+		logger.Get().Warn("user_repositories table doesn't exist, falling back to using created_by field or all repositories")
+
+		// Try to filter by created_by if that column exists
+		var createdByExists bool
+		err = db.QueryRowContext(ctx, `
+			SELECT EXISTS (
+				SELECT column_name
+				FROM information_schema.columns
+				WHERE table_name = 'repositories'
+				AND column_name = 'created_by'
+			)
+		`).Scan(&createdByExists)
+
+		if err != nil {
+			return nil, fmt.Errorf("error checking created_by column: %w", err)
+		}
+
+		if createdByExists {
+			logger.Get().Info("Filtering repositories by created_by", zap.String("user_id", userID))
+			rows, err = db.QueryContext(ctx, `
+				SELECT id, name, owner, url, clone_url, created_at, updated_at, last_scan_at, status
+				FROM repositories
+				WHERE created_by = $1
+				ORDER BY updated_at DESC
+			`, userID)
+		} else {
+			// If neither user_repositories table nor created_by column exists, return all repositories
+			logger.Get().Warn("No way to filter repositories by user, returning all repositories")
+			rows, err = db.QueryContext(ctx, `
+				SELECT id, name, owner, url, clone_url, created_at, updated_at, last_scan_at, status
+				FROM repositories
+				ORDER BY updated_at DESC
+			`)
+		}
+	}
+
 	if err != nil {
 		// If there's a query error, return the error
 		return nil, fmt.Errorf("failed to query repositories: %w", err)
@@ -230,6 +382,11 @@ func (s *gitHubService) ListRepositories() ([]*Repository, error) {
 		return nil, fmt.Errorf("error while iterating over repository rows: %w", err)
 	}
 
+	// Return empty array instead of nil if no repositories found
+	if repositories == nil {
+		repositories = []*Repository{}
+	}
+
 	return repositories, nil
 }
 
@@ -265,7 +422,7 @@ func (s *gitHubService) AddUserRepository(ctx context.Context, userID string, re
 	if err == sql.ErrNoRows {
 		// Repository doesn't exist, create it
 		_, err = db.ExecContext(ctx,
-			`INSERT INTO repositories (id, owner, name, url, clone_url, description, created_at, updated_at, status, created_by) 
+			`INSERT INTO repositories (id, owner, name, url, clone_url, description, created_at, updated_at, status, created_by)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 			repoInfo.ID, owner, name, repoInfo.URL, repoInfo.CloneURL, repoInfo.Description,
 			time.Now().Format(time.RFC3339), time.Now().Format(time.RFC3339), "pending", userID)
@@ -318,11 +475,6 @@ func (s *gitHubService) AddUserRepository(ctx context.Context, userID string, re
 func (s *gitHubService) GetRepository(id string) (*Repository, error) {
 	ctx := context.Background()
 
-	// Check if this is a sample repository ID and return it if so
-	if strings.HasPrefix(id, "sample-") {
-		return nil, fmt.Errorf("repository with ID %s not found", id)
-	}
-
 	// Get the database connection
 	db := s.db.GetDB()
 	if db == nil {
@@ -333,7 +485,7 @@ func (s *gitHubService) GetRepository(id string) (*Repository, error) {
 	var tableExists bool
 	err := db.QueryRowContext(ctx, `
 		SELECT EXISTS (
-			SELECT FROM information_schema.tables 
+			SELECT FROM information_schema.tables
 			WHERE table_schema = 'public'
 			AND table_name = 'repositories'
 		)
@@ -399,11 +551,11 @@ func (s *gitHubService) GetRepositoryVulnerabilities(ctx context.Context, repoID
 	var tablesExist bool
 	err := db.QueryRowContext(ctx, `
 		SELECT EXISTS (
-			SELECT FROM information_schema.tables 
+			SELECT FROM information_schema.tables
 			WHERE table_schema = 'public'
 			AND table_name = 'scans'
 		) AND EXISTS (
-			SELECT FROM information_schema.tables 
+			SELECT FROM information_schema.tables
 			WHERE table_schema = 'public'
 			AND table_name = 'vulnerabilities'
 		)
@@ -427,9 +579,48 @@ func (s *gitHubService) GetRepositoryVulnerabilities(ctx context.Context, repoID
 		return nil, fmt.Errorf("failed to find latest scan: %w", err)
 	}
 
+	// Ensure results_available flag is set if we have vulnerabilities
+	log := logger.FromContext(ctx)
+
+	// Check if we have vulnerabilities for this scan
+	var vulnCount int
+	err = db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM vulnerabilities WHERE scan_id = $1`, scanID).Scan(&vulnCount)
+
+	if err != nil {
+		log.Error("Failed to check vulnerability count",
+			zap.String("scan_id", scanID),
+			zap.Error(err))
+	} else if vulnCount > 0 {
+		// Check if results_available is false
+		var resultsAvailable bool
+		err = db.QueryRowContext(ctx,
+			`SELECT results_available FROM scans WHERE id = $1`, scanID).Scan(&resultsAvailable)
+
+		if err != nil {
+			log.Error("Failed to check results_available flag",
+				zap.String("scan_id", scanID),
+				zap.Error(err))
+		} else if !resultsAvailable {
+			// If we have vulnerabilities but results_available is false, update it
+			_, err = db.ExecContext(ctx,
+				`UPDATE scans SET results_available = true WHERE id = $1`, scanID)
+
+			if err != nil {
+				log.Error("Failed to update results_available flag",
+					zap.String("scan_id", scanID),
+					zap.Error(err))
+			} else {
+				log.Info("Updated results_available flag to true based on existing vulnerabilities",
+					zap.String("scan_id", scanID),
+					zap.Int("vuln_count", vulnCount))
+			}
+		}
+	}
+
 	// Query the vulnerabilities for this scan
 	rows, err := db.QueryContext(ctx,
-		`SELECT id, vulnerability_type, file_path, line_start, line_end, severity, description, 
+		`SELECT id, vulnerability_type, file_path, line_start, line_end, severity, description,
 		remediation, code_snippet FROM vulnerabilities WHERE scan_id = $1`,
 		scanID)
 	if err != nil {
@@ -523,7 +714,7 @@ func (s *gitHubService) CreateRepository(owner, name, url string) (string, error
 
 	// Insert the repository into the database
 	_, err := db.Exec(
-		`INSERT INTO repositories (id, owner, name, url, clone_url, created_at, updated_at, status) 
+		`INSERT INTO repositories (id, owner, name, url, clone_url, created_at, updated_at, status)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		repoID, owner, name, url, parsedURL,
 		time.Now().Format(time.RFC3339), time.Now().Format(time.RFC3339), "pending")

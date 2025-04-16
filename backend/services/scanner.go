@@ -16,72 +16,85 @@ import (
 )
 
 // VulnerabilityType represents an OWASP Top 10 vulnerability type
+// These are based on the OWASP Top 10 2021 list of security risks
+// https://owasp.org/Top10/
 type VulnerabilityType string
 
+// Constants for the OWASP Top 10 vulnerability types (2021 version)
+// Each type represents a category of security risks that the scanner will detect
 const (
-	BrokenAccessControl        VulnerabilityType = "Broken Access Control"
-	CryptographicFailures      VulnerabilityType = "Cryptographic Failures"
-	Injection                  VulnerabilityType = "Injection"
-	InsecureDesign             VulnerabilityType = "Insecure Design"
-	SecurityMisconfiguration   VulnerabilityType = "Security Misconfiguration"
-	VulnerableComponents       VulnerabilityType = "Vulnerable Components"
-	IdentificationAuthFailures VulnerabilityType = "Identification and Authentication Failures"
-	SoftwareIntegrityFailures  VulnerabilityType = "Software and Data Integrity Failures"
-	SecurityLoggingFailures    VulnerabilityType = "Security Logging and Monitoring Failures"
-	ServerSideRequestForgery   VulnerabilityType = "Server-Side Request Forgery"
+	BrokenAccessControl        VulnerabilityType = "Broken Access Control"                      // A01:2021 - Improper access restrictions
+	CryptographicFailures      VulnerabilityType = "Cryptographic Failures"                     // A02:2021 - Weak crypto, sensitive data exposure
+	Injection                  VulnerabilityType = "Injection"                                  // A03:2021 - SQL, NoSQL, OS, LDAP injection flaws
+	InsecureDesign             VulnerabilityType = "Insecure Design"                            // A04:2021 - Design flaws that lead to security issues
+	SecurityMisconfiguration   VulnerabilityType = "Security Misconfiguration"                  // A05:2021 - Missing or insecure configurations
+	VulnerableComponents       VulnerabilityType = "Vulnerable Components"                      // A06:2021 - Using components with known vulnerabilities
+	IdentificationAuthFailures VulnerabilityType = "Identification and Authentication Failures" // A07:2021 - Auth problems
+	SoftwareIntegrityFailures  VulnerabilityType = "Software and Data Integrity Failures"       // A08:2021 - Integrity issues
+	SecurityLoggingFailures    VulnerabilityType = "Security Logging and Monitoring Failures"   // A09:2021 - Insufficient logging
+	ServerSideRequestForgery   VulnerabilityType = "Server-Side Request Forgery"                // A10:2021 - SSRF attacks
 )
 
 // Vulnerability represents a detected security vulnerability
+// This struct stores all the information about a specific vulnerability found in the code
 type Vulnerability struct {
-	ID          string
-	Type        VulnerabilityType
-	FilePath    string
-	LineStart   int
-	LineEnd     int
-	Severity    string // "Low", "Medium", "High", "Critical"
-	Description string
-	Remediation string
-	Code        string // The vulnerable code snippet
+	ID          string            // Unique identifier for the vulnerability
+	Type        VulnerabilityType // OWASP category of the vulnerability
+	FilePath    string            // Path to the file containing the vulnerability
+	LineStart   int               // Starting line number of the vulnerable code
+	LineEnd     int               // Ending line number of the vulnerable code
+	Severity    string            // "Low", "Medium", "High", "Critical"
+	Description string            // Human-readable description of the vulnerability
+	Remediation string            // Recommended fix for the vulnerability
+	Code        string            // The vulnerable code snippet
 }
 
 // ScanResult represents the results of a vulnerability scan
+// This contains all vulnerabilities found in a repository and metadata about the scan
 type ScanResult struct {
-	RepositoryID    string
-	Vulnerabilities []*Vulnerability
-	ScanTime        int64 // Unix timestamp
+	RepositoryID    string           // ID of the repository that was scanned
+	Vulnerabilities []*Vulnerability // List of all vulnerabilities found
+	ScanTime        int64            // Unix timestamp when the scan was performed
 }
 
 // ScanOptions contains options for the vulnerability scanner
+// These settings control how the scan is performed
 type ScanOptions struct {
-	VulnerabilityTypes []VulnerabilityType
-	MaxFiles           int
-	FileExtensions     []string
+	VulnerabilityTypes []VulnerabilityType // Types of vulnerabilities to scan for
+	MaxFiles           int                 // Maximum number of files to scan
+	FileExtensions     []string            // File extensions to include in the scan
 }
 
 // ScannerService defines the interface for vulnerability scanning
+// This interface allows for different scanner implementations
 type ScannerService interface {
 	// ScanRepository performs a vulnerability scan on a repository
+	// It walks through the repository directory, analyzes files, and detects vulnerabilities
 	ScanRepository(ctx context.Context, repoDir string, options *ScanOptions) (*ScanResult, error)
 
 	// ScanFile performs a vulnerability scan on a single file
+	// Useful for targeted scanning of specific files
 	ScanFile(ctx context.Context, filePath string, options *ScanOptions) ([]*Vulnerability, error)
 }
 
 // NewScannerService creates a new scanner service instance
+// This factory function initializes a scanner with the necessary dependencies
 func NewScannerService(githubService GitHubService) ScannerService {
 	return &scannerService{
 		githubService: githubService,
-		bamlClient:    baml.NewCodeScannerClient(),
+		bamlClient:    baml.NewCodeScannerClient(), // Initialize the BAML AI client for code scanning
 	}
 }
 
 // scannerService implements the ScannerService interface
+// This is the concrete implementation of the vulnerability scanning service
 type scannerService struct {
-	githubService GitHubService
-	bamlClient    *baml.CodeScannerClient
-	openAIService OpenAIService // We'll set this in the constructor if needed
+	githubService GitHubService           // Service to interact with GitHub
+	bamlClient    *baml.CodeScannerClient // Client to interact with the AI code scanner
 }
 
+// ScanRepository analyzes all eligible files in a repository for security vulnerabilities
+// This method is the main entry point for scanning an entire codebase
 func (s *scannerService) ScanRepository(ctx context.Context, repoDir string, options *ScanOptions) (*ScanResult, error) {
 	log := logger.FromContext(ctx)
 	if log == nil {
@@ -93,7 +106,8 @@ func (s *scannerService) ScanRepository(ctx context.Context, repoDir string, opt
 	// Create a scan record with a unique ID
 	scanID := uuid.New().String()
 
-	// Check if options are provided
+	// Use default options if none provided
+	// This ensures we have sensible defaults for vulnerability types and file extensions
 	if options == nil {
 		options = &ScanOptions{
 			VulnerabilityTypes: []VulnerabilityType{
@@ -108,48 +122,54 @@ func (s *scannerService) ScanRepository(ctx context.Context, repoDir string, opt
 				SecurityLoggingFailures,
 				ServerSideRequestForgery,
 			},
-			MaxFiles:       100,
+			MaxFiles:       100, // Limit to 100 files to prevent excessive scanning time
 			FileExtensions: []string{".go", ".js", ".py", ".java", ".php", ".html", ".css", ".ts", ".jsx", ".tsx"},
 		}
 	}
 
 	// Find all eligible files for scanning
+	// We'll collect paths to all files that match our criteria
 	var filesToScan []string
 	log.Debug("Finding files to scan", zap.Strings("extensions", options.FileExtensions))
 
 	// Define directories to skip (common dependency and non-application directories)
+	// This improves performance by avoiding scanning of third-party code
 	dirsToSkip := map[string]bool{
-		".git":              true,
-		"node_modules":      true,
-		"vendor":            true,
-		"venv":              true,
-		"env":               true,
-		"lib":               true,
-		"bin":               true,
-		"dist":              true,
-		"build":             true,
-		"site-packages":     true,
-		".github":           true,
-		"__pycache__":       true,
-		".pytest_cache":     true,
-		".cache":            true,
-		"package-lock.json": true,
-		"yarn.lock":         true,
+		".git":              true, // Git metadata
+		"node_modules":      true, // NPM dependencies
+		"vendor":            true, // Go vendor directory
+		"venv":              true, // Python virtual environment
+		"env":               true, // Python environment
+		"lib":               true, // Library code
+		"bin":               true, // Binary files
+		"dist":              true, // Distribution builds
+		"build":             true, // Build artifacts
+		"site-packages":     true, // Python packages
+		".github":           true, // GitHub configuration
+		"__pycache__":       true, // Python cache
+		".pytest_cache":     true, // Python test cache
+		".cache":            true, // Generic cache
+		"package-lock.json": true, // NPM lock file
+		"yarn.lock":         true, // Yarn lock file
 	}
 
+	// Walk the repository directory tree to find eligible files
 	err := filepath.Walk(repoDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return err
+			log.Warn("Error accessing path", zap.String("path", path), zap.Error(err))
+			return nil // Continue despite errors
 		}
 
 		if info.IsDir() {
 			// Skip directories that are likely not application code
+			// This prevents scanning dependency directories
 			if dirsToSkip[info.Name()] {
 				log.Debug("Skipping dependency directory", zap.String("dir", info.Name()))
 				return filepath.SkipDir
 			}
 
-			// Also skip directories that have paths containing site-packages or other common dependency paths
+			// Also skip directories that have paths containing common dependency patterns
+			// This catches nested dependencies
 			if strings.Contains(path, "site-packages") ||
 				strings.Contains(path, "node_modules") ||
 				strings.Contains(path, "vendor") ||
@@ -162,28 +182,33 @@ func (s *scannerService) ScanRepository(ctx context.Context, repoDir string, opt
 		}
 
 		// Check if file has one of the target extensions
+		// Only scan files with extensions we're interested in
 		ext := filepath.Ext(path)
 		for _, targetExt := range options.FileExtensions {
 			if ext == targetExt {
-				// Skip minified JavaScript files, which are not typically vulnerabilities
+				// Skip minified JavaScript/CSS files, which are typically not sources of vulnerabilities
+				// and can be difficult for the AI to analyze effectively
 				if (ext == ".js" || ext == ".css") && strings.Contains(path, ".min.") {
 					return nil
 				}
 
-				// Skip test files if they're not important for vulnerability scanning
+				// Skip test files as they often contain sample code that triggers false positives
+				// and typically don't run in production
 				if strings.Contains(path, "_test.go") ||
 					strings.Contains(path, "test_") ||
 					strings.Contains(path, "spec.") {
 					return nil
 				}
 
-				log.Debug("Adding file to scan list", zap.String("file", path))
+				// Add the file to our scan list
+				relPath, _ := filepath.Rel(repoDir, path)
+				log.Debug("Adding file to scan list", zap.String("file", relPath))
 				filesToScan = append(filesToScan, path)
 				break
 			}
 		}
 
-		// Limit the number of files to scan
+		// Limit the number of files to scan to prevent excessive scanning time
 		if options.MaxFiles > 0 && len(filesToScan) >= options.MaxFiles {
 			return filepath.SkipDir
 		}
@@ -191,23 +216,52 @@ func (s *scannerService) ScanRepository(ctx context.Context, repoDir string, opt
 		return nil
 	})
 
+	// Handle errors or empty file lists
 	if err != nil {
 		log.Error("Error walking repository directory", zap.Error(err))
-		return nil, fmt.Errorf("failed to scan repository files: %w", err)
+		// Continue with any files found instead of failing completely
+		if len(filesToScan) == 0 {
+			log.Warn("No files found to scan, checking if repository exists")
+			// Check if repo directory exists and has content
+			if _, statErr := os.Stat(repoDir); statErr != nil {
+				return nil, fmt.Errorf("repository directory not found or inaccessible: %w", statErr)
+			}
+
+			// Directory exists but no matching files found
+			// Try with broader extensions as fallback to find something to scan
+			fallbackExts := []string{".txt", ".md", ".json", ".yml", ".yaml", ".xml"}
+			log.Info("Trying fallback file types", zap.Strings("extensions", fallbackExts))
+
+			filepath.Walk(repoDir, func(path string, info os.FileInfo, walkErr error) error {
+				if walkErr != nil || info.IsDir() {
+					return nil
+				}
+				ext := filepath.Ext(path)
+				for _, fbExt := range fallbackExts {
+					if ext == fbExt {
+						filesToScan = append(filesToScan, path)
+						break
+					}
+				}
+				return nil
+			})
+		}
 	}
 
 	log.Info("Found files to scan", zap.Int("file_count", len(filesToScan)))
 
-	// Convert vulnerability types to strings for BAML
+	// Convert vulnerability types to strings for the BAML client
+	// BAML requires string input rather than our custom VulnerabilityType
 	var vulnTypeStrings []string
 	for _, vt := range options.VulnerabilityTypes {
 		vulnTypeStrings = append(vulnTypeStrings, string(vt))
 	}
 
-	// Scan each file
+	// Scan each file and collect all vulnerabilities
 	var allVulnerabilities []*Vulnerability
 
 	for _, filePath := range filesToScan {
+		// Calculate the relative path from the repo root for better reporting
 		relPath, err := filepath.Rel(repoDir, filePath)
 		if err != nil {
 			log.Warn("Could not get relative path", zap.String("file", filePath), zap.Error(err))
@@ -216,7 +270,7 @@ func (s *scannerService) ScanRepository(ctx context.Context, repoDir string, opt
 
 		log.Debug("Scanning file", zap.String("file", relPath))
 
-		// Read the file content
+		// Read the file content for analysis
 		codeBytes, err := ioutil.ReadFile(filePath)
 		if err != nil {
 			log.Warn("Failed to read file", zap.String("file", relPath), zap.Error(err))

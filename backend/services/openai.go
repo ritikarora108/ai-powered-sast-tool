@@ -1,8 +1,13 @@
+/*
+ * DEPRECATED: This OpenAI service is no longer used and has been replaced by BAML orchestration.
+ * It will be removed in a future release.
+ */
+
 package services
 
 import (
-	"context"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"

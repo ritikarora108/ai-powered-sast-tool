@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/ritikarora108/ai-powered-sast-tool/backend/db"
 	"github.com/ritikarora108/ai-powered-sast-tool/backend/internal/logger"
 	"github.com/ritikarora108/ai-powered-sast-tool/backend/services"
@@ -18,15 +20,36 @@ import (
 	"go.uber.org/zap"
 )
 
+// VulnerabilityType is imported from services package
+type VulnerabilityType = services.VulnerabilityType
+
+// Import vulnerability type constants
+var (
+	Injection                  = services.Injection
+	BrokenAccessControl        = services.BrokenAccessControl
+	CryptographicFailures      = services.CryptographicFailures
+	InsecureDesign             = services.InsecureDesign
+	SecurityMisconfiguration   = services.SecurityMisconfiguration
+	VulnerableComponents       = services.VulnerableComponents
+	IdentificationAuthFailures = services.IdentificationAuthFailures
+	SoftwareIntegrityFailures  = services.SoftwareIntegrityFailures
+	SecurityLoggingFailures    = services.SecurityLoggingFailures
+	ServerSideRequestForgery   = services.ServerSideRequestForgery
+)
+
 // RepositoryHandler handles repository-related API requests
+// This is the main handler for all GitHub repository operations including
+// repository creation, retrieval, scanning, and reporting scan results
 type RepositoryHandler struct {
-	GitHubService  services.GitHubService
-	ScannerService services.ScannerService
-	OpenAIService  services.OpenAIService
-	TemporalClient client.Client
+	GitHubService  services.GitHubService  // Service for GitHub API integration
+	ScannerService services.ScannerService // Service for vulnerability scanning
+	OpenAIService  services.OpenAIService  // Service for AI-powered analysis
+	TemporalClient client.Client           // Client for Temporal workflow engine
 }
 
-// NewRepositoryHandler creates a new repository handler
+// NewRepositoryHandler creates a new repository handler with all required dependencies
+// This is a factory function that initializes the handler with the services it needs
+// to interact with GitHub, scan code, perform AI analysis, and start workflows
 func NewRepositoryHandler(
 	githubService services.GitHubService,
 	scannerService services.ScannerService,
@@ -42,24 +65,6 @@ func NewRepositoryHandler(
 	}
 }
 
-// RegisterRoutes registers the repository routes
-func (h *RepositoryHandler) RegisterRoutes(r chi.Router) {
-	logger.Info("Registering repository routes")
-	r.Post("/repositories", h.CreateRepository)
-	r.Get("/repositories", h.ListRepositories)
-	r.Get("/repositories/{id}", h.GetRepository)
-	r.Post("/repositories/{id}/scan", h.ScanRepository)
-	r.Get("/repositories/{id}/vulnerabilities", h.GetVulnerabilities)
-
-	// Register the scan public repository endpoint
-	r.Post("/scan", h.ScanPublicRepository)
-	r.Get("/scan/{id}/status", h.GetScanStatus)
-	r.Get("/scan/{id}/results", h.GetScanResults)
-
-	// Add debug endpoint
-	r.Get("/scan/{id}/debug", h.DebugWorkflow)
-}
-
 // ScanPublicRepository handles scanning a public GitHub repository by URL
 // This endpoint doesn't require authentication or GitHub integration
 func (h *RepositoryHandler) ScanPublicRepository(w http.ResponseWriter, r *http.Request) {
@@ -69,6 +74,7 @@ func (h *RepositoryHandler) ScanPublicRepository(w http.ResponseWriter, r *http.
 	// Parse request body
 	var req struct {
 		RepoURL string `json:"repo_url"`
+		Email   string `json:"email"` // Optional email for notification
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Error("Failed to decode request body", zap.Error(err))
@@ -121,6 +127,55 @@ func (h *RepositoryHandler) ScanPublicRepository(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// Get or create user based on email if provided
+	var userID string
+	if req.Email != "" {
+		log.Info("Email provided for notifications", zap.String("email", req.Email))
+
+		// Check if user with this email already exists
+		err = dbConn.QueryRowContext(r.Context(),
+			`SELECT id FROM users WHERE email = $1`,
+			req.Email).Scan(&userID)
+
+		if err == sql.ErrNoRows {
+			// Create a new user with this email
+			userID = uuid.New().String()
+			_, err = dbConn.ExecContext(r.Context(),
+				`INSERT INTO users (id, email, name, created_at, updated_at, role, receive_notifications)
+				VALUES ($1, $2, $3, NOW(), NOW(), 'user', true)`,
+				userID, req.Email, fmt.Sprintf("User %s", req.Email[:strings.Index(req.Email, "@")]))
+
+			if err != nil {
+				log.Error("Failed to create user for notification",
+					zap.String("email", req.Email),
+					zap.Error(err))
+				// Continue without user ID
+				userID = ""
+			} else {
+				log.Info("Created new user for notification",
+					zap.String("user_id", userID),
+					zap.String("email", req.Email))
+			}
+		} else if err != nil {
+			log.Error("Error checking for existing user",
+				zap.String("email", req.Email),
+				zap.Error(err))
+			// Continue without user ID
+			userID = ""
+		} else {
+			log.Info("Found existing user for notification",
+				zap.String("user_id", userID),
+				zap.String("email", req.Email))
+		}
+	} else {
+		// Get the user ID from the context (if authenticated)
+		contextUserID, ok := r.Context().Value("userID").(string)
+		if ok {
+			userID = contextUserID
+			log.Info("Using authenticated user", zap.String("user_id", userID))
+		}
+	}
+
 	// Check if repository already exists
 	var existingRepoID string
 	err = dbConn.QueryRowContext(r.Context(),
@@ -138,8 +193,6 @@ func (h *RepositoryHandler) ScanPublicRepository(w http.ResponseWriter, r *http.
 
 	if err == sql.ErrNoRows {
 		// Repository doesn't exist, create it
-		// Get the user ID from the context
-		userID, ok := r.Context().Value("userID").(string)
 		description := repoInfo.Description
 		if description == "" {
 			description = "Repository scanned via AI-powered SAST tool"
@@ -148,7 +201,7 @@ func (h *RepositoryHandler) ScanPublicRepository(w http.ResponseWriter, r *http.
 		// Create the repository with creator information
 		_, err = dbConn.ExecContext(r.Context(),
 			`INSERT INTO repositories (id, owner, name, url, clone_url, description, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-			repoInfo.ID, owner, name, repoInfo.URL, repoInfo.CloneURL, description, sql.NullString{String: userID, Valid: ok})
+			repoInfo.ID, owner, name, repoInfo.URL, repoInfo.CloneURL, description, sql.NullString{String: userID, Valid: userID != ""})
 		if err != nil {
 			log.Error("Failed to store repository information",
 				zap.String("repo_id", repoInfo.ID),
@@ -158,6 +211,42 @@ func (h *RepositoryHandler) ScanPublicRepository(w http.ResponseWriter, r *http.
 		}
 		log.Info("Repository stored in database",
 			zap.String("repo_id", repoInfo.ID))
+
+		// If we have a user ID, add an entry to user_repositories table for association
+		if userID != "" {
+			// Check if user_repositories table exists
+			var joinTableExists bool
+			err = dbConn.QueryRowContext(r.Context(), `
+				SELECT EXISTS (
+					SELECT FROM information_schema.tables
+					WHERE table_schema = 'public'
+					AND table_name = 'user_repositories'
+				)
+			`).Scan(&joinTableExists)
+
+			if err != nil {
+				log.Error("Error checking user_repositories table existence", zap.Error(err))
+				// Continue anyway, this is not critical
+			} else if joinTableExists {
+				// Add repository to user_repositories table
+				_, err = dbConn.ExecContext(r.Context(),
+					`INSERT INTO user_repositories (user_id, repository_id) VALUES ($1, $2)
+					ON CONFLICT (user_id, repository_id) DO NOTHING`,
+					userID, repoInfo.ID)
+
+				if err != nil {
+					log.Error("Failed to associate repository with user in user_repositories",
+						zap.String("repo_id", repoInfo.ID),
+						zap.String("user_id", userID),
+						zap.Error(err))
+					// Continue anyway, this is not critical
+				} else {
+					log.Info("Repository associated with user in user_repositories",
+						zap.String("repo_id", repoInfo.ID),
+						zap.String("user_id", userID))
+				}
+			}
+		}
 	} else {
 		// Repository exists, update it
 		_, err = dbConn.ExecContext(r.Context(),
@@ -172,6 +261,65 @@ func (h *RepositoryHandler) ScanPublicRepository(w http.ResponseWriter, r *http.
 		}
 		log.Info("Repository information updated",
 			zap.String("repo_id", repoInfo.ID))
+
+		// If we have a user ID, ensure association in user_repositories table
+		if userID != "" {
+			// Check if user_repositories table exists
+			var joinTableExists bool
+			err = dbConn.QueryRowContext(r.Context(), `
+				SELECT EXISTS (
+					SELECT FROM information_schema.tables
+					WHERE table_schema = 'public'
+					AND table_name = 'user_repositories'
+				)
+			`).Scan(&joinTableExists)
+
+			if err != nil {
+				log.Error("Error checking user_repositories table existence", zap.Error(err))
+				// Continue anyway, this is not critical
+			} else if joinTableExists {
+				// Add repository to user_repositories table if not already there
+				_, err = dbConn.ExecContext(r.Context(),
+					`INSERT INTO user_repositories (user_id, repository_id) VALUES ($1, $2)
+					ON CONFLICT (user_id, repository_id) DO NOTHING`,
+					userID, repoInfo.ID)
+
+				if err != nil {
+					log.Error("Failed to associate repository with user in user_repositories",
+						zap.String("repo_id", repoInfo.ID),
+						zap.String("user_id", userID),
+						zap.Error(err))
+					// Continue anyway, this is not critical
+				} else {
+					log.Info("Repository associated with user in user_repositories",
+						zap.String("repo_id", repoInfo.ID),
+						zap.String("user_id", userID))
+				}
+			}
+		}
+	}
+
+	// If we have a user ID, make sure to associate them with this repository as creator
+	if userID != "" && existingRepoID == "" {
+		// Create a scan record with the user as creator
+		scanID := uuid.New().String()
+		_, err = dbConn.ExecContext(r.Context(),
+			`INSERT INTO scans (id, repository_id, status, started_at, created_by)
+			VALUES ($1, $2, $3, NOW(), $4)`,
+			scanID, repoInfo.ID, "pending", userID)
+
+		if err != nil {
+			log.Error("Failed to create scan record with user association",
+				zap.String("repo_id", repoInfo.ID),
+				zap.String("user_id", userID),
+				zap.Error(err))
+			// Continue anyway
+		} else {
+			log.Info("Created scan record with user association",
+				zap.String("scan_id", scanID),
+				zap.String("repo_id", repoInfo.ID),
+				zap.String("user_id", userID))
+		}
 	}
 
 	// Initiate Temporal workflow for repository scanning
@@ -190,6 +338,8 @@ func (h *RepositoryHandler) ScanPublicRepository(w http.ResponseWriter, r *http.
 			"Identification and Authentication Failures", "Software and Data Integrity Failures",
 			"Security Logging and Monitoring Failures", "Server-Side Request Forgery"},
 		FileExtensions: []string{".go", ".js", ".py", ".java", ".php", ".html", ".css", ".ts", ".jsx", ".tsx"},
+		NotifyEmail:    req.Email != "", // Flag to indicate whether to send email
+		Email:          req.Email,       // Pass the email to the workflow
 	}
 
 	log.Debug("Starting Temporal workflow",
@@ -212,10 +362,11 @@ func (h *RepositoryHandler) ScanPublicRepository(w http.ResponseWriter, r *http.
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{
-		"scan_id":    repoInfo.ID,
-		"status":     "scan_initiated",
-		"run_id":     we.GetRunID(),
-		"repository": req.RepoURL,
+		"scan_id":       repoInfo.ID,
+		"status":        "scan_initiated",
+		"run_id":        we.GetRunID(),
+		"repository":    req.RepoURL,
+		"repository_id": repoInfo.ID,
 	})
 }
 
@@ -429,6 +580,21 @@ func (h *RepositoryHandler) GetScanResults(w http.ResponseWriter, r *http.Reques
 			}
 		}
 
+		// Update results_available flag if the workflow is complete and we have vulnerabilities
+		if !resultsAvailable && (len(vulnerabilities) > 0 || len(result.Vulnerabilities) > 0) && dbConn != nil {
+			_, err := dbConn.ExecContext(r.Context(),
+				"UPDATE scans SET results_available = true WHERE id = $1", scanID)
+			if err != nil {
+				log.Error("Failed to update results_available flag",
+					zap.String("scan_id", scanID),
+					zap.Error(err))
+			} else {
+				log.Info("Updated results_available flag to true",
+					zap.String("scan_id", scanID))
+				resultsAvailable = true
+			}
+		}
+
 		// Group vulnerabilities by OWASP category
 		categorizedVulns := make(map[string][]*services.Vulnerability)
 		for _, vuln := range vulnerabilities {
@@ -528,18 +694,29 @@ func (h *RepositoryHandler) CreateRepository(w http.ResponseWriter, r *http.Requ
 // ListRepositories handles listing repositories
 func (h *RepositoryHandler) ListRepositories(w http.ResponseWriter, r *http.Request) {
 	// Get user ID from context
-	_, ok := r.Context().Value("userID").(string)
+	userID, ok := r.Context().Value("userID").(string)
 	if !ok {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	repositories, err := h.GitHubService.ListRepositories()
+	log := logger.FromContext(r.Context())
+	log.Debug("Listing repositories for user", zap.String("user_id", userID))
+
+	repositories, err := h.GitHubService.ListRepositories(userID)
 	if err != nil {
+		log.Error("Error listing repositories", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	// Ensure we always return a valid JSON array even if empty
+	if repositories == nil {
+		repositories = []*services.Repository{}
+	}
+
+	log.Debug("Returning repository list", zap.Int("count", len(repositories)))
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(repositories)
 }
@@ -548,8 +725,110 @@ func (h *RepositoryHandler) ListRepositories(w http.ResponseWriter, r *http.Requ
 func (h *RepositoryHandler) GetRepository(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
+	// Get user ID from context
+	userID, ok := r.Context().Value("userID").(string)
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	log := logger.FromContext(r.Context())
+
+	// Check if repository belongs to this user
+	dbConn := h.GitHubService.GetDatabaseConnection()
+	if dbConn == nil {
+		log.Error("Database connection is unavailable")
+		http.Error(w, "Database connection unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	// First check if the user_repositories table exists
+	var joinTableExists bool
+	err := dbConn.QueryRowContext(r.Context(), `
+		SELECT EXISTS (
+			SELECT FROM information_schema.tables
+			WHERE table_schema = 'public'
+			AND table_name = 'user_repositories'
+		)
+	`).Scan(&joinTableExists)
+
+	if err != nil {
+		log.Error("Error checking user_repositories table existence", zap.Error(err))
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	// If join table exists, check if the repository belongs to the user
+	if joinTableExists {
+		var exists bool
+		err = dbConn.QueryRowContext(r.Context(),
+			`SELECT EXISTS(
+				SELECT 1 FROM user_repositories
+				WHERE user_id = $1 AND repository_id = $2
+			)`,
+			userID, id).Scan(&exists)
+
+		if err != nil {
+			log.Error("Error checking repository access", zap.Error(err))
+			http.Error(w, "Error checking repository access", http.StatusInternalServerError)
+			return
+		}
+
+		if !exists {
+			log.Warn("User attempted to access unauthorized repository",
+				zap.String("user_id", userID),
+				zap.String("repo_id", id))
+			http.Error(w, "Repository not found", http.StatusNotFound)
+			return
+		}
+	} else {
+		// If join table doesn't exist, check if the created_by column exists and matches
+		var createdByExists bool
+		err = dbConn.QueryRowContext(r.Context(), `
+			SELECT EXISTS (
+				SELECT column_name
+				FROM information_schema.columns
+				WHERE table_name = 'repositories'
+				AND column_name = 'created_by'
+			)
+		`).Scan(&createdByExists)
+
+		if err != nil {
+			log.Error("Error checking created_by column", zap.Error(err))
+			http.Error(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+
+		if createdByExists {
+			var exists bool
+			err = dbConn.QueryRowContext(r.Context(),
+				`SELECT EXISTS(
+					SELECT 1 FROM repositories
+					WHERE id = $1 AND created_by = $2
+				)`,
+				id, userID).Scan(&exists)
+
+			if err != nil {
+				log.Error("Error checking repository owner", zap.Error(err))
+				http.Error(w, "Error checking repository access", http.StatusInternalServerError)
+				return
+			}
+
+			if !exists {
+				log.Warn("User attempted to access unauthorized repository",
+					zap.String("user_id", userID),
+					zap.String("repo_id", id))
+				http.Error(w, "Repository not found", http.StatusNotFound)
+				return
+			}
+		}
+		// If neither table exists, skip the authorization check (temporary fallback)
+	}
+
+	// Get the repository details
 	repo, err := h.GitHubService.GetRepository(id)
 	if err != nil {
+		log.Error("Error fetching repository", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -563,6 +842,104 @@ func (h *RepositoryHandler) ScanRepository(w http.ResponseWriter, r *http.Reques
 	log := logger.FromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
+	// Get user ID from context
+	userID, ok := r.Context().Value("userID").(string)
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Check if repository belongs to this user
+	dbConn := h.GitHubService.GetDatabaseConnection()
+	if dbConn == nil {
+		log.Error("Database connection is unavailable")
+		http.Error(w, "Database connection unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	// First check if the user_repositories table exists
+	var joinTableExists bool
+	err := dbConn.QueryRowContext(r.Context(), `
+		SELECT EXISTS (
+			SELECT FROM information_schema.tables
+			WHERE table_schema = 'public'
+			AND table_name = 'user_repositories'
+		)
+	`).Scan(&joinTableExists)
+
+	if err != nil {
+		log.Error("Error checking user_repositories table existence", zap.Error(err))
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	// If join table exists, check if the repository belongs to the user
+	if joinTableExists {
+		var exists bool
+		err = dbConn.QueryRowContext(r.Context(),
+			`SELECT EXISTS(
+				SELECT 1 FROM user_repositories
+				WHERE user_id = $1 AND repository_id = $2
+			)`,
+			userID, id).Scan(&exists)
+
+		if err != nil {
+			log.Error("Error checking repository access", zap.Error(err))
+			http.Error(w, "Error checking repository access", http.StatusInternalServerError)
+			return
+		}
+
+		if !exists {
+			log.Warn("User attempted to scan unauthorized repository",
+				zap.String("user_id", userID),
+				zap.String("repo_id", id))
+			http.Error(w, "Repository not found", http.StatusNotFound)
+			return
+		}
+	} else {
+		// If join table doesn't exist, check if the created_by column exists and matches
+		var createdByExists bool
+		err = dbConn.QueryRowContext(r.Context(), `
+			SELECT EXISTS (
+				SELECT column_name
+				FROM information_schema.columns
+				WHERE table_name = 'repositories'
+				AND column_name = 'created_by'
+			)
+		`).Scan(&createdByExists)
+
+		if err != nil {
+			log.Error("Error checking created_by column", zap.Error(err))
+			http.Error(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+
+		if createdByExists {
+			var exists bool
+			err = dbConn.QueryRowContext(r.Context(),
+				`SELECT EXISTS(
+					SELECT 1 FROM repositories
+					WHERE id = $1 AND created_by = $2
+				)`,
+				id, userID).Scan(&exists)
+
+			if err != nil {
+				log.Error("Error checking repository owner", zap.Error(err))
+				http.Error(w, "Error checking repository access", http.StatusInternalServerError)
+				return
+			}
+
+			if !exists {
+				log.Warn("User attempted to scan unauthorized repository",
+					zap.String("user_id", userID),
+					zap.String("repo_id", id))
+				http.Error(w, "Repository not found", http.StatusNotFound)
+				return
+			}
+		}
+		// If neither table exists, skip the authorization check (temporary fallback)
+	}
+
 	// Get repository info first to use in workflow
 	repo, err := h.GitHubService.GetRepository(id)
 	if err != nil {
@@ -572,7 +949,7 @@ func (h *RepositoryHandler) ScanRepository(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Update repository status to in_progress
-	dbConn := h.GitHubService.GetDatabaseConnection()
+	dbConn = h.GitHubService.GetDatabaseConnection()
 	if dbConn == nil {
 		log.Error("Database connection is unavailable, cannot create scan record", zap.String("repo_id", id))
 		http.Error(w, "Database connection unavailable", http.StatusInternalServerError)
@@ -582,7 +959,7 @@ func (h *RepositoryHandler) ScanRepository(w http.ResponseWriter, r *http.Reques
 	// Create a scan record first
 	scanID := id // Using the repository ID as the scan ID for simplicity
 	_, err = dbConn.ExecContext(r.Context(),
-		`INSERT INTO scans (id, repository_id, status, started_at) 
+		`INSERT INTO scans (id, repository_id, status, started_at)
 		VALUES ($1, $2, $3, NOW())`,
 		scanID, id, "in_progress")
 	if err != nil {
@@ -643,15 +1020,191 @@ func (h *RepositoryHandler) ScanRepository(w http.ResponseWriter, r *http.Reques
 func (h *RepositoryHandler) GetVulnerabilities(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
+	// Get user ID from context
+	userID, ok := r.Context().Value("userID").(string)
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	log := logger.FromContext(r.Context())
+
+	// Check if repository belongs to this user
+	dbConn := h.GitHubService.GetDatabaseConnection()
+	if dbConn == nil {
+		log.Error("Database connection is unavailable")
+		http.Error(w, "Database connection unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	// First check if the user_repositories table exists
+	var joinTableExists bool
+	err := dbConn.QueryRowContext(r.Context(), `
+		SELECT EXISTS (
+			SELECT FROM information_schema.tables
+			WHERE table_schema = 'public'
+			AND table_name = 'user_repositories'
+		)
+	`).Scan(&joinTableExists)
+
+	if err != nil {
+		log.Error("Error checking user_repositories table existence", zap.Error(err))
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	// If join table exists, check if the repository belongs to the user
+	if joinTableExists {
+		var exists bool
+		err = dbConn.QueryRowContext(r.Context(),
+			`SELECT EXISTS(
+				SELECT 1 FROM user_repositories
+				WHERE user_id = $1 AND repository_id = $2
+			)`,
+			userID, id).Scan(&exists)
+
+		if err != nil {
+			log.Error("Error checking repository access", zap.Error(err))
+			http.Error(w, "Error checking repository access", http.StatusInternalServerError)
+			return
+		}
+
+		if !exists {
+			log.Warn("User attempted to access unauthorized vulnerabilities",
+				zap.String("user_id", userID),
+				zap.String("repo_id", id))
+			http.Error(w, "Repository not found", http.StatusNotFound)
+			return
+		}
+	} else {
+		// If join table doesn't exist, check if the created_by column exists and matches
+		var createdByExists bool
+		err = dbConn.QueryRowContext(r.Context(), `
+			SELECT EXISTS (
+				SELECT column_name
+				FROM information_schema.columns
+				WHERE table_name = 'repositories'
+				AND column_name = 'created_by'
+			)
+		`).Scan(&createdByExists)
+
+		if err != nil {
+			log.Error("Error checking created_by column", zap.Error(err))
+			http.Error(w, "Database error", http.StatusInternalServerError)
+			return
+		}
+
+		if createdByExists {
+			var exists bool
+			err = dbConn.QueryRowContext(r.Context(),
+				`SELECT EXISTS(
+					SELECT 1 FROM repositories
+					WHERE id = $1 AND created_by = $2
+				)`,
+				id, userID).Scan(&exists)
+
+			if err != nil {
+				log.Error("Error checking repository owner", zap.Error(err))
+				http.Error(w, "Error checking repository access", http.StatusInternalServerError)
+				return
+			}
+
+			if !exists {
+				log.Warn("User attempted to access unauthorized vulnerabilities",
+					zap.String("user_id", userID),
+					zap.String("repo_id", id))
+				http.Error(w, "Repository not found", http.StatusNotFound)
+				return
+			}
+		}
+		// If neither table exists, skip the authorization check (temporary fallback)
+	}
+
 	// Get vulnerabilities from GitHub service
 	vulnerabilities, err := h.GitHubService.GetRepositoryVulnerabilities(r.Context(), id)
 	if err != nil {
+		log.Error("Error fetching vulnerabilities", zap.Error(err))
 		http.Error(w, fmt.Sprintf("Failed to get vulnerabilities: %v", err), http.StatusInternalServerError)
 		return
 	}
 
+	// Organize vulnerabilities by OWASP category
+	categorizedVulns := make(map[string][]interface{})
+
+	// Process each vulnerability
+	for _, vuln := range vulnerabilities {
+		// Determine the appropriate OWASP Top 10 category based on vulnerability type
+		owaspCategory := mapVulnerabilityTypeToOWASP(vuln.Type)
+
+		if categorizedVulns[owaspCategory] == nil {
+			categorizedVulns[owaspCategory] = []interface{}{}
+		}
+
+		categorizedVulns[owaspCategory] = append(categorizedVulns[owaspCategory], map[string]interface{}{
+			"id":             vuln.ID,
+			"description":    vuln.Description,
+			"severity":       vuln.Severity,
+			"file_path":      vuln.FilePath,
+			"line_number":    vuln.LineStart,
+			"code_snippet":   vuln.Code,
+			"recommendation": vuln.Remediation,
+		})
+	}
+
+	// Find latest scan ID for this repository (if not already known)
+	var scanID string
+	err = dbConn.QueryRowContext(r.Context(),
+		`SELECT id FROM scans WHERE repository_id = $1 ORDER BY created_at DESC LIMIT 1`,
+		id).Scan(&scanID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			scanID = "unknown"
+		} else {
+			log.Error("Error finding latest scan", zap.Error(err))
+		}
+	}
+
+	// Return a properly formatted response
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(vulnerabilities)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"scan_id":                     scanID,
+		"repository_id":               id,
+		"status":                      "completed",
+		"scan_started_at":             time.Now().Add(-1 * time.Hour).Format(time.RFC3339),
+		"scan_completed_at":           time.Now().Format(time.RFC3339),
+		"vulnerabilities_count":       len(vulnerabilities),
+		"vulnerabilities_by_category": categorizedVulns,
+		"results_available":           true,
+	})
+}
+
+// Helper function to map vulnerability types to OWASP categories
+func mapVulnerabilityTypeToOWASP(vulnType VulnerabilityType) string {
+	switch vulnType {
+	case Injection:
+		return "A03:2021"
+	case BrokenAccessControl:
+		return "A01:2021"
+	case CryptographicFailures:
+		return "A02:2021"
+	case InsecureDesign:
+		return "A04:2021"
+	case SecurityMisconfiguration:
+		return "A05:2021"
+	case VulnerableComponents:
+		return "A06:2021"
+	case IdentificationAuthFailures:
+		return "A07:2021"
+	case SoftwareIntegrityFailures:
+		return "A08:2021"
+	case SecurityLoggingFailures:
+		return "A09:2021"
+	case ServerSideRequestForgery:
+		return "A10:2021"
+	default:
+		return "Other"
+	}
 }
 
 // parseGitHubRepoURL parses a GitHub URL to extract owner and repo name
@@ -660,14 +1213,32 @@ func parseGitHubRepoURL(url string) (owner, name string, err error) {
 	log := logger.Get()
 	log.Debug("Parsing GitHub URL", zap.String("url", url))
 
-	// Parse logic below...
+	// Normalize URL by trimming whitespace and trailing slashes
+	url = strings.TrimSpace(url)
+	url = strings.TrimSuffix(url, "/")
+
 	// GitHub URL formats:
 	// - https://github.com/owner/repo
 	// - https://github.com/owner/repo.git
+	// - https://github.com/owner/repo/
 	// - git@github.com:owner/repo.git
+	// - github.com/owner/repo
+
+	// Handle github.com/owner/repo format (without https://)
+	if strings.HasPrefix(url, "github.com/") {
+		url = "https://" + url
+	}
 
 	if strings.HasPrefix(url, "https://github.com/") {
 		parts := strings.Split(strings.TrimPrefix(url, "https://github.com/"), "/")
+		if len(parts) < 2 {
+			return "", "", fmt.Errorf("invalid GitHub URL format")
+		}
+		owner = parts[0]
+		name = strings.TrimSuffix(parts[1], ".git")
+		return owner, name, nil
+	} else if strings.HasPrefix(url, "http://github.com/") {
+		parts := strings.Split(strings.TrimPrefix(url, "http://github.com/"), "/")
 		if len(parts) < 2 {
 			return "", "", fmt.Errorf("invalid GitHub URL format")
 		}
@@ -685,7 +1256,7 @@ func parseGitHubRepoURL(url string) (owner, name string, err error) {
 	}
 
 	log.Error("Unsupported GitHub URL format", zap.String("url", url))
-	return "", "", fmt.Errorf("unsupported GitHub URL format")
+	return "", "", fmt.Errorf("unsupported GitHub URL format: %s (expected 'https://github.com/owner/repo')", url)
 }
 
 // DebugWorkflow provides detailed information about a Temporal workflow

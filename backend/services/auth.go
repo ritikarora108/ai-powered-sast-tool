@@ -12,7 +12,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/golang-jwt/jwt"
+	"github.com/golang-jwt/jwt/v4"
 	"github.com/ritikarora108/ai-powered-sast-tool/backend/db"
 	sqlcdb "github.com/ritikarora108/ai-powered-sast-tool/backend/db/sqlc"
 	"github.com/ritikarora108/ai-powered-sast-tool/backend/internal/logger"
@@ -31,11 +31,16 @@ type User struct {
 
 // GoogleUserInfo represents information from Google's userinfo endpoint
 type GoogleUserInfo struct {
-	ID            string `json:"id"`
-	Email         string `json:"email"`
-	VerifiedEmail bool   `json:"verified_email"`
-	Name          string `json:"name"`
-	Picture       string `json:"picture"`
+	ID               string `json:"id"`             // Standard user ID
+	Sub              string `json:"sub"`            // Subject ID from ID token
+	Email            string `json:"email"`          // Email from userinfo
+	EmailFromIDToken string `json:"email_verified"` // Email field from ID token response
+	VerifiedEmail    bool   `json:"verified_email"` // Email verification status
+	Name             string `json:"name"`           // User's name
+	GivenName        string `json:"given_name"`     // First name
+	FamilyName       string `json:"family_name"`    // Last name
+	Picture          string `json:"picture"`        // Profile picture URL
+	Locale           string `json:"locale"`         // User's locale
 }
 
 // GoogleTokenResponse represents the response from Google's token endpoint
@@ -51,7 +56,7 @@ type GoogleTokenResponse struct {
 type Claims struct {
 	UserID string `json:"user_id"`
 	Email  string `json:"email"`
-	jwt.StandardClaims
+	jwt.RegisteredClaims
 }
 
 // AuthService handles authentication-related functions
@@ -320,10 +325,10 @@ func (s *AuthService) GenerateJWT(userID, email string) (string, error) {
 	claims := &Claims{
 		UserID: userID,
 		Email:  email,
-		StandardClaims: jwt.StandardClaims{
-			ExpiresAt: expirationTime.Unix(),
-			IssuedAt:  time.Now().Unix(),
-			NotBefore: time.Now().Unix(),
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(expirationTime),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now()),
 			Issuer:    "ai-powered-sast-tool",
 			Subject:   userID,
 		},
@@ -357,10 +362,10 @@ func GenerateSessionToken(user *User) (string, error) {
 	claims := &Claims{
 		UserID: user.ID,
 		Email:  user.Email,
-		StandardClaims: jwt.StandardClaims{
-			ExpiresAt: expirationTime.Unix(),
-			IssuedAt:  time.Now().Unix(),
-			NotBefore: time.Now().Unix(),
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(expirationTime),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now()),
 			Issuer:    "ai-powered-sast-tool",
 			Subject:   user.ID,
 		},
