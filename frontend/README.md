@@ -1,78 +1,118 @@
-# AI-Powered SAST Tool Frontend
+# KeyGraph AI-Powered SAST Tool Frontend
 
-This is the frontend component of the AI-powered Static Application Security Testing (SAST) tool. It provides a user interface for scanning GitHub repositories for OWASP Top 10 vulnerabilities.
+This is the frontend implementation for the KeyGraph AI-Powered Static Application Security Testing (SAST) tool. It's built with Next.js and designed to work with the Go backend.
 
 ## Features
 
-- Google Sign-In authentication
-- Repository submission and scanning
-- Viewing scan results categorized by OWASP Top 10
-- Responsive design for desktop and mobile
+- **Google Sign-In Authentication**: Secure all routes with Google authentication
+- **Repository Management**: Add public GitHub repositories for scanning
+- **Security Analysis**: View detailed security scan results organized by OWASP Top 10 categories
+- **Modern UI**: Clean, responsive user interface with dark mode support
 
-## Technologies Used
+## Technology Stack
 
-- Next.js 14 with App Router
-- TypeScript
-- Tailwind CSS
-- Next Auth for authentication
-- Axios for API requests
-- Headless UI for components
+- **Framework**: [Next.js](https://nextjs.org/)
+- **Authentication**: [NextAuth.js](https://next-auth.js.org/) with Google Provider
+- **Styling**: [Tailwind CSS](https://tailwindcss.com/)
+- **Icons**: [Heroicons](https://heroicons.com/)
+- **HTTP Client**: [Axios](https://axios-http.com/)
 
-## Setup and Installation
+## Getting Started
 
-1. Clone the repository
+### Prerequisites
+
+- Node.js 18+ and npm/yarn
+- Google OAuth credentials (Client ID and Client Secret)
+- Running backend server (see the backend README)
+
+### Installation
+
+1. Clone the repository:
+
+    ```bash
+    git clone https://github.com/yourusername/ai-powered-sast-tool.git
+    cd ai-powered-sast-tool/frontend
+    ```
+
 2. Install dependencies:
-   ```
-   npm install
-   ```
-3. Create a `.env.local` file with the following variables:
-   ```
-   NEXT_PUBLIC_API_URL=http://localhost:8080
-   NEXTAUTH_URL=http://localhost:3000
-   NEXTAUTH_SECRET=your-secret-key
-   GOOGLE_CLIENT_ID=your-google-client-id
-   GOOGLE_CLIENT_SECRET=your-google-client-secret
-   ```
+
+    ```bash
+    npm install
+    # or
+    yarn install
+    ```
+
+3. Set up environment variables:
+
+    ```bash
+    cp .env.example .env.local
+    ```
+
+    Then edit `.env.local` to add your Google OAuth credentials and other required values.
+
 4. Start the development server:
-   ```
-   npm run dev
-   ```
 
-## Usage
+    ```bash
+    npm run dev
+    # or
+    yarn dev
+    ```
 
-1. Navigate to `http://localhost:3000`
-2. Sign in with your Google account
-3. Add a GitHub repository URL to scan
-4. View scan results and OWASP vulnerability details
+5. Open [http://localhost:3000](http://localhost:3000) to view the application.
 
-## Integration with Backend
+## Deployment
 
-This frontend is designed to work with the AI-Powered SAST Tool backend. The backend handles:
+### Build for Production
 
-- Repository cloning
-- Code scanning using OpenAI
-- OWASP Top 10 vulnerability detection
-- Temporal workflow orchestration
+```bash
+npm run build
+# or
+yarn build
+```
 
-Make sure the backend is running on the URL specified in your `.env.local` file.
+### Start Production Server
+
+```bash
+npm run start
+# or
+yarn start
+```
 
 ## Project Structure
 
 ```
 frontend/
-├── public/                 # Static assets
-├── src/                    # Source code
-│   ├── app/                # Next.js app router
-│   ├── components/         # React components
-│   ├── services/           # API services
-│   └── types/              # TypeScript types
-├── .env.local              # Environment variables
-├── Dockerfile              # Frontend Docker config
-├── next.config.ts          # Next.js configuration
-├── package.json            # NPM dependencies
-└── tsconfig.json           # TypeScript configuration
+├── public/           # Static assets
+├── src/
+│   ├── app/          # Next.js App Router pages
+│   │   ├── (auth)/   # Authentication pages
+│   │   ├── (dashboard)/ # Protected dashboard pages
+│   │   ├── api/      # API routes
+│   │   ├── components/   # React components
+│   │   │   ├── features/ # Feature components
+│   │   │   ├── ui/       # UI components
+│   │   ├── context/      # React contexts
+│   │   ├── hooks/        # Custom React hooks
+│   │   ├── services/     # API services
+│   │   ├── types/        # TypeScript types
+│   │   └── utils/        # Utility functions
+│   ├── .env.example      # Example environment variables
+│   ├── next.config.mjs   # Next.js configuration
+│   └── tailwind.config.js # Tailwind CSS configuration
 ```
+
+## Authentication Flow
+
+1. Users visit the application and are redirected to the sign-in page
+2. Users authenticate with Google
+3. NextAuth.js handles the OAuth flow and creates a session
+4. The session is used to authenticate API requests to the backend
+5. Protected routes check for an active session before rendering
+
+## Contributing
+
+Please read [CONTRIBUTING.md](../CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
 
 ## License
 
-Copyright © 2025 Ritik Arora. All rights reserved.
+This project is licensed under the MIT License - see the [LICENSE](../LICENSE) file for details.
