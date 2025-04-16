@@ -48,8 +48,3 @@ func AuthMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
-
-func verifyGoogleToken(token string) (string, error) {
-	// Implement Google token verification logic here
-	return "", nil
-}
